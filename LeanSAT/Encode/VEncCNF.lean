@@ -247,13 +247,16 @@ macro_rules
     (← `(VEncCNF.pure ()))
 
 @[inline]
-def for_all (arr : Array α) {P : α → PropPred ν} (f : (a : α) → VEncCNF ν Unit (P a))
-  : VEncCNF ν Unit (fun τ => ∀ a ∈ arr, P a τ) :=
-  ⟨ arr.foldlM (fun () x => f x) ()
+def all [ToList C α] [Fold C α] [Fold.ToList C α]
+    (c : C) {P : α → PropPred ν} (f : (a : α) → VEncCNF ν Unit (P a))
+  : VEncCNF ν Unit (fun τ => ∀ a ∈ toList c, P a τ) :=
+  ⟨ Fold.foldM c (fun () x => f x) ()
   , by
-    rcases arr with ⟨L⟩
-    rw [Array.foldlM_eq_foldlM_data]
-    simp [Array.mem_def]
+    have ⟨L,hPerm,h⟩ :=
+      Fold.ToList.foldM_eq_foldM_toList (m := EncCNF _)
+        c (fun () x => (f x).1) ()
+    simp_rw [← hPerm.mem_iff]; clear hPerm
+    rw [h]; clear h
     induction L with
     | nil   => simp; apply encodesProp_pure
     | cons hd tl ih =>
@@ -262,6 +265,10 @@ def for_all (arr : Array α) {P : α → PropPred ν} (f : (a : α) → VEncCNF 
       · have := (f hd).2
         simpa using this
       · aesop⟩
+
+def forAll [IndexType α] {P : α → PropPred ν} (f : (a : α) → VEncCNF ν Unit (P a))
+  : VEncCNF ν Unit (fun τ => ∀ a, P a τ) :=
+  all (IndexType.univ α) f
 
 -- Cayden TODO: Unit could possibly made to be β instead? Generalize later.
 -- One would think that P could be of type {P : PropFun ν}. But Lean timed out synthesizing that
