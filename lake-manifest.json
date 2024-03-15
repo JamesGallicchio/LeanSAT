@@ -67,7 +67,7 @@
   {"url": "https://github.com/JamesGallicchio/LeanColls.git",
    "type": "git",
    "subDir": null,
-   "rev": "8a7ee690b7529f109e137e39f87f93d3f7706497",
+   "rev": "48d79ab8907fe61dfbeaee24bd040ef0df3c3ac7",
    "name": "leancolls",
    "manifestFile": "lake-manifest.json",
    "inputRev": "main",

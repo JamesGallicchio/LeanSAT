@@ -20,13 +20,54 @@ import LeanSAT.Model.PropFun
 
 import LeanSAT.Upstream.ToStd
 import LeanSAT.Upstream.ToMathlib
-import LeanSAT.Upstream.Array
+import Experiments.ProofChecking.Array
 
 import Mathlib.Data.Nat.Basic
 
 open LeanSAT Model Nat
 open LitVar ILit IVar LawfulLitVar
 open PropFun
+
+lemma Fin.foldl_induction (n) (f : α → Fin n → α) (init : α) (P : α → Fin (n+1) → Prop)
+    (hInit : P init 0)
+    (hSucc : ∀ a (i : Fin n), P a ⟨i.val, Nat.lt_succ_of_lt i.is_lt⟩ → P (f a i) ⟨i.val+1, Nat.succ_lt_succ i.is_lt⟩) :
+    P (Fin.foldl n f init) ⟨n, Nat.lt_succ_self n⟩ :=
+  loop init 0 hInit
+where
+  loop (x : α) (i : Fin (n+1)) (h : P x i) : P (Fin.foldl.loop n f x i.val) ⟨n, Nat.lt_succ_self n⟩ := by
+    unfold foldl.loop
+    split
+    next h =>
+      have := loop (f x ⟨i.val, h⟩) ⟨i.val+1, Nat.succ_lt_succ h⟩
+      apply this
+      apply hSucc
+      assumption
+    next h =>
+      have : i.val = n := Nat.eq_of_le_of_lt_succ (not_lt.mp h) i.is_lt
+      simp_rw [← this]
+      assumption
+  termination_by n - i
+
+lemma Fin.foldl_induction' (n) (f : α → Fin n → α) (init : α) (P : α → Prop)
+    (hInit : P init)
+    (hSucc : ∀ a i, P a → P (f a i)) :
+    P (Fin.foldl n f init) :=
+  Fin.foldl_induction n f init (fun a _ => P a) hInit hSucc
+
+lemma Fin.foldl_of_comm (n) (f : α → Fin n → α) (init : α) (i : Fin n)
+    (H : ∀ (acc : α) (i₁ i₂ : Fin n), f (f acc i₁) i₂ = f (f acc i₂) i₁) :
+    ∃ (acc : α), Fin.foldl n f init = f acc i :=
+  i.is_lt |> Fin.foldl_induction n f init (fun res j => i.val < j.val → ∃ (acc : α), res = f acc i)
+    (nomatch ·)
+    (by
+      intro a j ih h
+      cases' lt_or_eq_of_le (Nat.lt_succ.mp h) with h
+      . have ⟨acc, hAcc⟩ := ih h
+        use (f acc j)
+        rw [hAcc, H]
+      . have : i = j := by ext; assumption
+        use a
+        rw [this])
 
 /-! # Concise PPA (single array) -/
 
@@ -91,6 +132,7 @@ def litValue? (τ : PPA) (l : ILit) : Option Bool :=
     τ.litValue? (-l) = (τ.litValue? l).map Bool.not := by
   aesop (add norm unfold litValue?)
 
+-- TODO: Make iff?
 theorem litValue?_eq_varValue?_none {τ : PPA} {l : ILit} :
     τ.litValue? l = none → τ.varValue? (toVar l) = none := by
   aesop (add norm unfold litValue?)
@@ -102,6 +144,14 @@ theorem litValue?_eq_varValue?_some {τ : PPA} {l : ILit} {b : Bool} :
 @[simp] theorem litValue?_negate_none_iff {τ : PPA} {l : ILit} :
     τ.litValue? (-l) = none ↔ τ.litValue? l = none := by
   simp [litValue?_negate]
+
+@[simp] theorem litValue?_negate_some_iff {τ : PPA} {l : ILit} {b : Bool} :
+    τ.litValue? (-l) = some b ↔ τ.litValue? l = some (!b) := by
+  cases b <;> simp [litValue?_negate]
+
+@[simp] theorem litValue?_negate_some_iff' {τ : PPA} {l : ILit} {b : Bool} :
+    τ.litValue? (-l) = some !b ↔ τ.litValue? l = some b := by
+  cases b <;> simp [litValue?_negate]
 
 theorem lt_size_of_varValue?_some {τ : PPA} {v : IVar} {b : Bool} :
     τ.varValue? v = some b → v.index < τ.size := by
@@ -115,7 +165,6 @@ theorem lt_size_of_varValue?_some {τ : PPA} {v : IVar} {b : Bool} :
 theorem lt_size_of_litValue?_some {τ : PPA} {l : ILit} {b : Bool} :
     τ.litValue? l = some b → (toVar l).index < τ.size := by
   simp [litValue?]
-  rw [← toVar_index_eq_index]
   rintro (⟨hv, _⟩ | ⟨hv, _⟩)
   <;> exact lt_size_of_varValue?_some hv
 
@@ -138,9 +187,6 @@ def toPropFun (τ : PPA) : PropFun IVar :=
 
 instance : Coe PPA (PropFun IVar) := ⟨toPropFun⟩
 
-instance : SemanticEntails (PropAssignment IVar) (PropFun IVar) where
-  entails := PropFun.satisfies
-
 theorem satisfies_iff {τ : PPA} {σ : PropAssignment IVar} :
     σ ⊨ ↑τ ↔ ∀ (i : Fin τ.size), σ ⊨ τ.idxToPropFun i := by
   constructor
@@ -157,13 +203,12 @@ theorem satisfies_iff {τ : PPA} {σ : PropAssignment IVar} :
 theorem satisfies_iff_vars {τ : PPA} {σ : PropAssignment IVar} :
     σ ⊨ ↑τ ↔ ∀ ⦃v⦄ ⦃b⦄, τ.varValue? v = some b → σ v = b := by
   constructor
-  . rintro h ⟨v, hv⟩ b h'
-    have := lt_size_of_varValue?_eq_some h'
-    let i : Fin τ.size := ⟨v - 1, this⟩
-    have h := satisfies_iff.mp h i
-    dsimp [idxToPropFun, varToPropFun] at h
-    simp_rw [IVar.fromIndex, Nat.sub_add_cancel hv, PNat.val, h'] at h
-    simp only [Option.map_some', Option.getD_some] at h
+  . rintro h v b h'
+    have h := satisfies_iff.mp h ⟨IVar.index v, lt_size_of_varValue?_some h'⟩
+    simp [idxToPropFun, varToPropFun] at h
+    have : ⟨v.val, v.property⟩ = v := rfl
+    rw [this, h'] at h
+    simp only [this, Option.map_some', Option.getD_some] at h
     cases b <;> simp_all
   . intro h
     apply satisfies_iff.mpr
@@ -173,8 +218,6 @@ theorem satisfies_iff_vars {τ : PPA} {σ : PropAssignment IVar} :
     . simp
     . have := h h'
       cases b <;> simp_all
-
-#exit
 
 theorem satisfies_iff_lits {τ : PPA} {σ : PropAssignment IVar} :
     σ ⊨ ↑τ ↔ ∀ ⦃l⦄, τ.litValue? l = some true → σ ⊨ ↑l := by
@@ -241,14 +284,14 @@ theorem varValue?_false_iff {τ : PPA} {v : IVar} :
 theorem not_mem_semVars_of_varValue?_none {τ : PPA} {v : IVar} :
     τ.varValue? v = none → v ∉ τ.toPropFun.semVars := by
   rw [not_mem_semVars]
-  intro hv σ b hσ
-  rw [satisfies_iff_vars] at hσ ⊢
-  intro y b hy
-  have : v ≠ y := fun h => by rw [h, hy] at hv; contradiction
-  rw [PropAssignment.set_get_of_ne _ _ this]
-  apply hσ hy
+  intro hv σ b
+  simp_rw [satisfies_iff_vars]
+  constructor
+  <;> intro hσ y b' hy
+  <;> have : v ≠ y := fun h => by rw [h, hy] at hv; contradiction
+  · rw [← hσ hy, PropAssignment.set_get_of_ne _ _ this]
+  · rw [← hσ hy, PropAssignment.set_get_of_ne _ _ this]
 
--- Cayden TODO: Clean up proof so less duplication?
 theorem varValue?_none_iff {τ : PPA} {v : IVar} :
     τ.varValue? v = none ↔ ¬(τ.toPropFun ≤ .var v) ∧ ¬(τ.toPropFun ≤ (.var v)ᶜ) := by
   constructor
@@ -298,26 +341,21 @@ theorem litValue?_none_iff {τ : PPA} {l : ILit} :
     simp (config := {contextual := true}) [varValue?_none_iff]
   exact ⟨fun h => ⟨h.2, h.1⟩, fun h => ⟨h.2, h.1⟩⟩
 
-theorem inf_eq_of_varValue?_true {τ : PPA} {v : IVar} :
-    τ.varValue? v = some true → τ.toPropFun ⊓ (.var v) = τ := by
-  simp only [varValue?_true_iff, inf_eq_left, imp_self]
+theorem varValue?_true_iff_eq_inf {τ : PPA} {v : IVar} :
+    τ.varValue? v = some true ↔ τ = τ.toPropFun ⊓ (.var v) := by
+  simp only [varValue?_true_iff, left_eq_inf, imp_self]
 
-theorem inf_eq_of_varValue?_false {τ : PPA} {v : IVar} :
-    τ.varValue? v = some false → τ.toPropFun ⊓ (.var v)ᶜ = τ := by
-  simp only [varValue?_false_iff, inf_eq_left, imp_self]
+theorem varValue?_false_iff_eq_inf {τ : PPA} {v : IVar} :
+    τ.varValue? v = some false ↔ τ = τ.toPropFun ⊓ (.var v)ᶜ := by
+  simp only [varValue?_false_iff, left_eq_inf, imp_self]
 
-theorem inf_eq_of_litValue?_true {τ : PPA} {l : ILit} :
-    τ.litValue? l = some true → τ.toPropFun ⊓ ↑l = τ := by
-  simp only [litValue?_true_iff, inf_eq_left, imp_self]
+theorem litValue?_true_iff_eq_inf {τ : PPA} {l : ILit} :
+    τ.litValue? l = some true ↔ τ = τ.toPropFun ⊓ ↑l := by
+  simp only [litValue?_true_iff, left_eq_inf]
 
-theorem inf_eq_of_litValue?_false {τ : PPA} {l : ILit} :
-    τ.litValue? l = some false → τ.toPropFun ⊓ (↑l)ᶜ = τ := by
-  simp only [litValue?_false_iff, inf_eq_left, imp_self]
-
--- ?? folded into the `PPA` structure for now (forever?)
---structure PPA.WF (ppa : PPA) where
-  -- hGen: 0 < generation
-  -- hMaxVal : ∀ x ∈ assignment, x.natAbs ≤ maxVal
+theorem litValue?_false_iff_eq_inf {τ : PPA} {l : ILit} :
+    τ.litValue? l = some false ↔ τ = τ.toPropFun ⊓ (↑l)ᶜ := by
+  simp only [litValue?_false_iff, left_eq_inf]
 
 /-! ## Setting values in the PPA -/
 
@@ -343,7 +381,7 @@ def bump (τ : PPA) : PPA :=
 /-- Helper theorem for `setVar*`. -/
 theorem setVar_le_maxGen (τ : PPA) (i : Nat) (b : Bool) (gen : Nat) :
     let v : Int := if b then gen else -gen
-    ∀ g ∈ (τ.assignment.setF i v 0).data, g.natAbs ≤ Nat.max τ.maxGen gen := by
+    ∀ g ∈ (τ.assignment.setF i v 0).data, g.natAbs ≤ max τ.maxGen gen := by
   intro v g hg
   have := Array.mem_setF _ _ _ _ g hg
   rcases this with h | h | h
@@ -385,6 +423,8 @@ def setVarFor (τ : PPA) (v : IVar) (b : Bool) (extraBumps : Nat) : PPA :=
 def setLitFor (τ : PPA) (l : ILit) (extraBumps : Nat) : PPA :=
   τ.setVarFor (toVar l) (polarity l) extraBumps
 
+/-! Lemmas about the above operations -/
+
 theorem setVar_eq_setVarFor (τ : PPA) (v : IVar) (b : Bool) :
     τ.setVar v b = τ.setVarFor v b 0 := by
   simp [setVar, setVarFor]
@@ -403,6 +443,548 @@ theorem setVarUntil_eq_setVarFor (τ : PPA) (v : IVar) (b : Bool) (gen : Nat) :
 theorem setLit_eq_setLitFor (τ : PPA) (l : ILit) :
     τ.setLit l = τ.setLitFor l 0 := by
   simp [setLit, setLitFor, setVar_eq_setVarFor]
+
+theorem lt_reset_generation (τ : PPA) : ∀ i ∈ τ.reset.assignment.data, i.natAbs < τ.reset.generation := by
+  dsimp [reset]
+  intro i h
+  have := τ.le_maxGen i h
+  linarith
+
+theorem lt_new_generation (maxVar : Nat) : ∀ i ∈ (new maxVar).assignment.data, i.natAbs < (new maxVar).generation := by
+  intro i h
+  simp [new] at h ⊢
+  induction' maxVar with maxVar ih
+  <;> simp at h
+  rcases h with (rfl | h)
+  · rfl
+  · exact ih h
+
+@[simp]
+theorem varValue?_reset (τ : PPA) (v : IVar) : τ.reset.varValue? v = none := by
+  unfold varValue?
+  split
+  . rfl
+  . split
+    . next n hn h =>
+      have : n ∈ τ.reset.assignment.data := by
+        simp_rw [Array.get?_eq_getElem?, Array.getElem?_eq_data_get?, List.get?_eq_some] at hn
+        have ⟨_, hn⟩ := hn
+        rw [← hn]
+        apply List.get_mem
+      have := τ.lt_reset_generation n this
+      linarith
+    . rfl
+
+@[simp]
+theorem litValue?_reset (τ : PPA) (l : ILit) : (τ.reset).litValue? l = none := by
+  simp [litValue?, varValue?_reset]
+
+@[simp]
+theorem toPropFun_reset (τ : PPA) : τ.reset.toPropFun = ⊤ := by
+  ext; simp [satisfies_iff_vars]
+
+@[simp]
+theorem varValue?_new (maxVar : Nat) (v : IVar) : (new maxVar).varValue? v = none := by
+  unfold varValue?
+  split
+  . rfl
+  . split
+    . next n hn h =>
+      have : n ∈ (new maxVar).assignment.data := by
+        simp_rw [Array.get?_eq_getElem?, Array.getElem?_eq_data_get?, List.get?_eq_some] at hn
+        have ⟨_, hn⟩ := hn
+        rw [← hn]
+        apply List.get_mem
+      have := lt_new_generation maxVar n this
+      linarith
+    . rfl
+
+@[simp]
+theorem litValue?_new (maxVar : Nat) (l : ILit) : (new maxVar).litValue? l = none := by
+  simp [litValue?, varValue?_new]
+
+@[simp]
+theorem toPropFun_new (maxVar : Nat) : (new maxVar).toPropFun = ⊤ := by
+  ext; simp [satisfies_iff_vars]
+
+/-! ### Lemmas about the `setVar`, `setLit` family -/
+
+section setVar
+
+variable (τ : PPA) (v : IVar) (l : ILit) (b : Bool) (bumps : Nat)
+
+@[simp]
+theorem varValue?_setVar : (τ.setVar v b).varValue? v = some b := by
+  unfold varValue? setVar
+  cases b <;> simp [Array.getElem?_setF, τ.generation.property]
+
+theorem varValue?_setVar_of_ne {v v' : IVar} :
+    v ≠ v' → ∀ (τ : PPA) (b : Bool), (τ.setVar v b).varValue? v' = τ.varValue? v' := by
+  intro hne
+  simp [varValue?, setVar,Array.getElem?_setF' _ _ _ (mt PNat.natPred_inj.mp hne)]
+
+@[simp]
+theorem varValue?_setLit : (τ.setLit l).varValue? (toVar l) = some (polarity l) := by
+  simp [setLit, varValue?_setVar]
+
+@[simp]
+theorem litValue?_setLit : (τ.setLit l).litValue? l = some true := by
+  simp [litValue?, setLit, varValue?_setVar]
+
+@[simp]
+theorem litValue?_setLit_negate : (τ.setLit l).litValue? (-l) = some false := by
+  simp [litValue?, setLit, varValue?_setVar]
+
+@[simp]
+theorem litValue?_setLit_negate' : (τ.setLit (-l)).litValue? l = some false := by
+  simp [litValue?, setLit, varValue?_setVar]
+
+@[simp]
+theorem varValue?_setLit_of_ne {l : ILit} {v : IVar} :
+    toVar l ≠ v → ∀ (τ : PPA), (τ.setLit l).varValue? v = τ.varValue? v := by
+  intro h
+  simp [setLit, varValue?_setVar_of_ne h]
+
+theorem litValue?_setLit_of_ne {l l' : ILit} :
+    toVar l ≠ toVar l' → ∀ (τ : PPA), (τ.setLit l).litValue? l' = τ.litValue? l' := by
+  intro h
+  simp [litValue?, varValue?_setLit_of_ne h]
+
+@[simp]
+theorem varValue?_setVarFor : (τ.setVarFor v b bumps).varValue? v = some b := by
+  unfold varValue? setVarFor
+  cases b <;> simp [Array.getElem?_setF, τ.generation.property]
+  · constructor
+    · rw [← Int.neg_add, Int.natAbs_neg, ← Nat.cast_add, Int.natAbs_ofNat]
+      exact Nat.le_add_left _ _
+    · linarith
+  · constructor
+    · rw [← Nat.cast_add, Int.natAbs_ofNat]
+      exact Nat.le_add_right _ _
+    · have : τ.generation ≤ τ.generation + bumps := Nat.le_add_right (↑τ.generation) bumps
+      rw [← Nat.cast_add]
+      exact Int.ofNat_pos.mpr (lt_of_lt_of_le ↑τ.generation.property this)
+
+theorem varValue?_setVarFor_of_ne {v v' : IVar} :
+    v ≠ v' → ∀ (τ : PPA) (b : Bool) (bumps : Nat),
+      (τ.setVarFor v b bumps).varValue? v' = τ.varValue? v' := by
+  intro hne
+  simp [varValue?, setVarFor, Array.getElem?_setF' _ _ _ (mt PNat.natPred_inj.mp hne)]
+
+@[simp]
+theorem varValue?_setLitFor : (τ.setLitFor l bumps).varValue? (toVar l) = some (polarity l) := by
+  simp [setLitFor]
+
+@[simp]
+theorem litValue?_setLitFor : (τ.setLitFor l bumps).litValue? l = some true := by
+  simp [litValue?, setLitFor]
+
+@[simp]
+theorem litValue?_setLitFor_negate : (τ.setLitFor l bumps).litValue? (-l) = some false := by
+  simp [litValue?, setLitFor]
+
+@[simp]
+theorem litValue?_setLitFor_negate' : (τ.setLitFor (-l) bumps).litValue? l = some false := by
+  simp [litValue?, setLitFor]
+
+theorem varValue?_setLitFor_of_ne {l : ILit} {v : IVar} : toVar l ≠ v →
+    ∀ (τ : PPA) (bumps : Nat), (τ.setLitFor l bumps).varValue? v = τ.varValue? v := by
+  intro h
+  simp [setLitFor, varValue?_setVarFor_of_ne h]
+
+theorem litValue?_setLitFor_of_ne {l l' : ILit} : toVar l ≠ toVar l' →
+    ∀ (τ : PPA) (bumps : Nat), (τ.setLitFor l bumps).litValue? l' = τ.litValue? l' := by
+  intro h
+  simp [litValue?, varValue?_setLitFor_of_ne h]
+
+/-! ### `toPropFun` model -/
+
+theorem toPropFun_setVar_true_of_none {τ : PPA} {v : IVar} : τ.varValue? v = none →
+    (τ.setVar v true).toPropFun = τ.toPropFun ⊓ .var v := by
+  intro h
+  rw [le_antisymm_iff]
+  constructor
+  <;> apply entails_ext.mpr
+  <;> intro σ hσ
+  · rw [satisfies_iff_vars] at hσ
+    rw [satisfies_conj, satisfies_iff_vars, satisfies_var]
+    constructor
+    · intro v' b' hv'
+      apply hσ
+      by_cases heq : v = v'
+      · subst heq
+        rw [h] at hv'; contradiction
+      · rwa [varValue?_setVar_of_ne heq]
+    · apply hσ
+      apply varValue?_setVar
+  · rw [satisfies_conj, satisfies_iff_vars, satisfies_var] at hσ
+    rcases hσ with ⟨hσ₁, hσ₂⟩
+    rw [satisfies_iff_vars]
+    intro v' b' hv'
+    by_cases heq : v = v'
+    · subst heq
+      rw [varValue?_setVar] at hv'; injection hv'; rename _ => h; subst h
+      exact hσ₂
+    · rw [varValue?_setVar_of_ne heq] at hv'
+      exact hσ₁ hv'
+
+theorem toPropFun_setVar_false_of_none {τ : PPA} {v : IVar} : τ.varValue? v = none →
+    (τ.setVar v false).toPropFun = τ.toPropFun ⊓ (.var v)ᶜ := by
+  intro h
+  rw [le_antisymm_iff]
+  constructor
+  <;> apply entails_ext.mpr
+  <;> intro σ hσ
+  · rw [satisfies_iff_vars] at hσ
+    rw [satisfies_conj, satisfies_iff_vars]
+    constructor
+    · intro v' b' hv'
+      apply hσ
+      by_cases heq : v = v'
+      · subst heq
+        rw [h] at hv'; contradiction
+      · rwa [varValue?_setVar_of_ne heq]
+    · simp; apply hσ
+      apply varValue?_setVar
+  · rw [satisfies_conj, satisfies_iff_vars] at hσ
+    rcases hσ with ⟨hσ₁, hσ₂⟩; simp at hσ₂
+    rw [satisfies_iff_vars]
+    intro v' b' hv'
+    by_cases heq : v = v'
+    · subst heq
+      rw [varValue?_setVar] at hv'; injection hv'; rename _ => h; subst h
+      exact hσ₂
+    · rw [varValue?_setVar_of_ne heq] at hv'
+      exact hσ₁ hv'
+
+theorem toPropFun_setVar_of_some {τ : PPA} {v : IVar} {b : Bool} :
+    τ.varValue? v = some b → (τ.setVar v b).toPropFun = τ.toPropFun := by
+  intro h
+  rw [le_antisymm_iff]
+  constructor
+  <;> apply entails_ext.mpr
+  <;> intro σ hσ
+  <;> rw [satisfies_iff_vars] at hσ ⊢
+  <;> intro v' b' hv'
+  <;> apply hσ
+  <;> by_cases heq : v = v'
+  · subst heq
+    rw [hv'] at h; injection h; rename _ => h; subst h
+    apply varValue?_setVar
+  · rwa [varValue?_setVar_of_ne heq]
+  · subst heq
+    rw [varValue?_setVar] at hv'; injection hv'; rename _ => hb; subst hb
+    exact h
+  · rwa [varValue?_setVar_of_ne heq] at hv'
+
+theorem toPropFun_setLit_of_none {τ : PPA} {l : ILit} :
+    τ.litValue? l = none → (τ.setLit l).toPropFun = τ.toPropFun ⊓ l := by
+  intro h
+  rcases mkPos_or_mkNeg l with (hl | hl)
+  <;> rw [hl, setLit]
+  <;> have := litValue?_eq_varValue?_none h
+  · simp [toPropFun_setVar_true_of_none this]
+  · simp [toPropFun_setVar_false_of_none this]
+
+theorem toPropFun_setLit_of_true {τ : PPA} {l : ILit} :
+    τ.litValue? l = some true → (τ.setLit l).toPropFun = τ.toPropFun := by
+  simp [litValue?, setLit]
+  exact toPropFun_setVar_of_some
+
+-- No matter the status of τ.toPropFun, setting the lit adds it to the PPA.
+theorem toPropFun_setLit_le (τ : PPA) (l : ILit) :
+    (τ.setLit l).toPropFun ≤ l := by
+  apply entails_ext.mpr
+  intro σ hσ
+  rw [satisfies_iff_lits] at hσ
+  apply hσ
+  apply litValue?_setLit
+
+@[simp]
+theorem toPropFun_setVarFor_eq_setVar {τ : PPA} {v : IVar} {b : Bool} {bumps : Nat} :
+    (τ.setVarFor v b bumps).toPropFun = (τ.setVar v b).toPropFun := by
+  rw [le_antisymm_iff]
+  constructor
+  <;> apply entails_ext.mpr
+  <;> intro σ hσ
+  <;> rw [satisfies_iff_vars] at hσ ⊢
+  <;> intro v' b' hv'
+  <;> apply hσ
+  · by_cases heq : v = v'
+    · subst heq
+      rw [varValue?_setVar] at hv'; injection hv'; rename _ => h; subst h
+      apply varValue?_setVarFor
+    · rw [varValue?_setVar_of_ne heq] at hv'
+      rwa [varValue?_setVarFor_of_ne heq]
+  · by_cases heq : v = v'
+    · subst heq
+      rw [varValue?_setVarFor] at hv'; injection hv'; rename _ => h; subst h
+      apply varValue?_setVar
+    · rw [varValue?_setVarFor_of_ne heq] at hv'
+      rwa [varValue?_setVar_of_ne heq]
+
+@[simp]
+theorem toPropFun_setLitFor_eq_setLit {τ : PPA} {l : ILit} {bumps : Nat} :
+    (τ.setLitFor l bumps).toPropFun = (τ.setLit l).toPropFun := by
+  rw [setLitFor, setLit, toPropFun_setVarFor_eq_setVar]
+
+end setVar /- section -/
+
+/-! # SetFor judgment -/
+
+section isSetFor
+
+variable {τ : PPA} {v : IVar}
+
+def isSet (τ : PPA) (v : IVar) : Prop :=
+  τ.varValue? v ≠ none
+
+-- Says that the provided variable is set for n "bumps"
+-- Add 1 because setting the variable sets its assignment value to τ.generation, so it's set for 1 bump
+def isSetFor (τ : PPA) (v : IVar) : Nat :=
+  ((τ.assignment.getD v.index 0).natAbs + 1) - τ.generation.val
+
+theorem isSetFor_pos_iff : isSetFor τ v > 0 ↔ isSet τ v := by
+  simp [isSet, isSetFor, varValue?]
+  match hv : τ.assignment[v.index]? with
+  | none => simp [hv]
+  | some g =>
+    simp [hv]
+    exact lt_succ
+
+-- CC: Might be useless since we can unroll the definition. Use an `abbrev` instead?
+theorem isSet_iff : isSet τ v ↔ τ.varValue? v ≠ none :=
+  ⟨id, id⟩
+
+@[simp]
+theorem not_isSet_new (maxVar : Nat) (v : IVar) : ¬isSet (new maxVar) v := by
+  simp [isSet, varValue?_new]
+
+theorem isSetFor_zero_iff {τ : PPA} {v : IVar} :
+    isSetFor τ v = 0 ↔ τ.varValue? v = none := by
+  cases hv : τ.assignment[v.index]?
+  <;> simp [isSetFor, varValue?, hv]
+  · exact Nat.sub_eq_zero_of_le τ.generation.property
+  · simp [Nat.sub_eq_zero_iff_le]; rfl
+
+@[simp]
+theorem setVar_isSetFor (τ : PPA) (v : IVar) (b : Bool) : isSetFor (τ.setVar v b) v = 1 := by
+  simp [isSetFor, setVar]; cases b <;> simp
+
+theorem setVar_isSetFor_of_ne {v v' : IVar} :
+    v ≠ v' → ∀ τ, isSetFor (τ.setVar v true) v' = isSetFor τ v' := by
+  intro hne
+  simp [isSetFor, setVar, Array.getElem?_setF' _ _ _ (mt PNat.natPred_inj.mp hne)]
+
+@[simp]
+theorem setLit_isSetFor (τ : PPA) (l : ILit) : isSetFor (τ.setLit l) (toVar l) = 1 :=
+  setVar_isSetFor _ _ _
+
+@[simp]
+theorem setLit_isSetFor_negate (τ : PPA) (l : ILit) : isSetFor (τ.setLit (-l)) (toVar l) = 1 := by
+  simp [setLit]
+
+theorem setLit_isSetFor_of_ne {l₁ l₂ : ILit} :
+    toVar l₁ ≠ toVar l₂ → isSetFor (τ.setLit l₁) (toVar l₂) = isSetFor τ (toVar l₂) := by
+  intro hne
+  simp [isSetFor, setLit, setVar, Array.getElem?_setF' _ _ _ (mt PNat.natPred_inj.mp hne)]
+
+theorem setLit_isSetFor_of_ne' {l : ILit} {v : IVar} :
+    toVar l ≠ v → isSetFor (τ.setLit l) v = isSetFor τ v := by
+  intro hne
+  simp [isSetFor, setLit, setVar, Array.getElem?_setF' _ _ _ (mt PNat.natPred_inj.mp hne)]
+
+@[simp]
+theorem setVarFor_isSetFor (τ : PPA) (v : IVar) (b : Bool) (bumps : Nat) :
+    isSetFor (τ.setVarFor v b bumps) v = bumps + 1 := by
+  simp [isSetFor, setVarFor]; cases b <;> simp
+  · rw [← Int.neg_add, Int.natAbs_neg]
+    have : Int.natAbs (bumps + τ.generation) = bumps + τ.generation := rfl
+    rw [this, add_assoc, add_comm τ.generation.val 1, ← add_assoc, Nat.add_sub_cancel]
+  · have : Int.natAbs (τ.generation + bumps) = τ.generation + bumps := rfl
+    rw [this, add_comm τ.generation.val _, add_assoc, add_comm τ.generation.val 1, ← add_assoc, Nat.add_sub_cancel]
+
+@[simp]
+theorem setLitFor_isSetFor (τ : PPA) (l : ILit) (bumps : Nat) :
+    isSetFor (τ.setLitFor l bumps) (toVar l) = (bumps + 1) :=
+  setVarFor_isSetFor _ _ _ _
+
+@[simp]
+theorem setLitFor_isSetFor_negate (τ : PPA) (l : ILit) (bumps : Nat) :
+    isSetFor (τ.setLitFor (-l) bumps) (toVar l) = (bumps + 1) := by
+  simp [setLitFor]
+
+theorem setLitFor_isSetFor_of_ne {l₁ l₂ : ILit} :
+    toVar l₁ ≠ toVar l₂ → ∀ (bumps : Nat),
+      isSetFor (τ.setLitFor l₁ bumps) (toVar l₂) = isSetFor τ (toVar l₂) := by
+  intro hne bumps
+  simp [isSetFor, setLitFor, setVarFor, Array.getElem?_setF' _ _ _ (mt PNat.natPred_inj.mp hne)]
+
+-- TODO: Standardize names
+theorem setLitFor_isSetFor_of_ne' {l : ILit} {v : IVar} :
+    toVar l ≠ v → ∀ (bumps : Nat),
+      isSetFor (τ.setLitFor l bumps) v = isSetFor τ v := by
+  intro hne bumps
+  simp [isSetFor, setLitFor, setVarFor, Array.getElem?_setF' _ _ _ (mt PNat.natPred_inj.mp hne)]
+
+@[simp]
+theorem isSet_setVar (τ : PPA) (v : IVar) (b : Bool) :
+    isSet (τ.setVar v b) v := by
+  cases b <;> simp [isSet, setVar, varValue?]
+
+@[simp]
+theorem isSet_setLit (τ : PPA) (l : ILit) :
+    isSet (τ.setLit l) (toVar l) := by
+  cases hpol : polarity l <;> simp [isSet, setLit, setVar, varValue?, hpol]
+
+theorem isSet_setLit_of_ne {l₁ l₂ : ILit} :
+    toVar l₁ ≠ toVar l₂ → ∀ τ, isSet (τ.setLit l₁) (toVar l₂) = isSet τ (toVar l₂) := by
+  intro hne τ
+  simp [isSet, setLit, setVar, varValue?, Array.getElem?_setF' _ _ _ (mt PNat.natPred_inj.mp hne)]
+
+theorem isSet_setLit_of_ne' {l : ILit} {v : IVar} :
+    toVar l ≠ v → ∀ τ, isSet (τ.setLit l) v = isSet τ v := by
+  intro hne τ
+  simp [isSet, setLit, setVar, varValue?, Array.getElem?_setF' _ _ _ (mt PNat.natPred_inj.mp hne)]
+
+@[simp]
+theorem isSet_setVarFor (τ : PPA) (v : IVar) (b : Bool) (offset : Nat) :
+    isSet (τ.setVarFor v b offset) v := by
+  simp [← isSetFor_pos_iff]
+
+@[simp]
+theorem isSet_setLitFor (τ : PPA) (l : ILit) (offset : Nat) :
+    isSet (τ.setLitFor l offset) (toVar l) := by
+  simp [← isSetFor_pos_iff]
+
+theorem isSet_setLitFor_of_ne {l₁ l₂ : ILit} :
+    toVar l₁ ≠ toVar l₂ → ∀ τ bumps,
+      isSet (τ.setLitFor l₁ bumps) (toVar l₂) = isSet τ (toVar l₂) := by
+  intro hne τ bumps
+  simp_rw [← isSetFor_pos_iff, setLitFor_isSetFor_of_ne hne]
+
+theorem isSet_setLitFor_of_ne' {l : ILit} {v : IVar} :
+    toVar l ≠ v → ∀ τ bumps, isSet (τ.setLitFor l bumps) v = isSet τ v := by
+  intro hne τ bumps
+  simp_rw [← isSetFor_pos_iff, setLitFor_isSetFor_of_ne' hne]
+
+@[simp]
+theorem isSet_reset (τ : PPA) : ∀ (v : IVar), ¬isSet τ.reset v := by
+  simp [isSet, varValue?_reset]
+
+@[simp]
+theorem isSet_new (maxVar : Nat) : ∀ (v : IVar), ¬isSet (new maxVar) v := by
+  simp [isSet, varValue?_new]
+
+@[simp]
+theorem isSetFor_bump {τ : PPA} {v : IVar} :
+    isSetFor τ.bump v = isSetFor τ v - 1 := by
+  simp [isSetFor, bump, ← sub_add_eq, ← Nat.add_sub_add_right]
+
+@[simp]
+theorem isSetFor_reset (τ : PPA) (v : IVar) : isSetFor τ.reset v = 0 :=
+  isSetFor_zero_iff.mpr (varValue?_reset τ v)
+
+-- CC: This is an iff, but only need → for now
+theorem varValue?_bump_of_isSetFor_pos {τ : PPA} {v : IVar} :
+    isSetFor τ v > 1 → (τ.bump).varValue? v = τ.varValue? v := by
+  intro h
+  simp [varValue?, bump, isSetFor] at h ⊢
+  match hv : τ.assignment[v.index]? with
+  | none => rfl
+  | some g =>
+    simp [hv] at h
+    simp
+    have : (τ.generation.val) + 1 < g.natAbs + 1 := add_lt_of_lt_sub' h
+    have : τ.generation.val + 1 ≤ g.natAbs := lt_succ.mp this
+    have : τ.generation.val ≤ g.natAbs := Nat.le_of_lt this
+    simp [*]
+
+end isSetFor /- section -/
+
+/-! extended and uniform -/
+
+def extended (τ τ' : PPA) (offset : Nat) : Prop := ∀ (v : IVar),
+    (τ.isSet v → τ'.isSetFor v = τ.isSetFor v ∧ τ'.varValue? v = τ.varValue? v)
+    ∧ (¬τ.isSet v → τ'.isSet v → τ'.isSetFor v = offset + 1)
+
+def uniform (τ : PPA) (offset : Nat) : Prop :=
+  ∀ (v : IVar), τ.isSet v → τ.isSetFor v = offset + 1
+
+@[simp]
+theorem extended_refl (τ : PPA) (offset : Nat) : extended τ τ offset := by
+  simp [extended]; intro v hcon h; exact absurd h hcon
+
+theorem extended_trans {τ₁ τ₂ τ₃ : PPA} {offset : Nat} :
+    extended τ₁ τ₂ offset → extended τ₂ τ₃ offset → extended τ₁ τ₃ offset := by
+  intro h₁ h₂ v
+  constructor
+  · intro hv
+    rcases (h₁ v).1 hv with ⟨h_isSet, h_varValue⟩
+    rw [← h_isSet, ← h_varValue]
+    rw [← isSetFor_pos_iff, ← h_isSet, isSetFor_pos_iff] at hv
+    exact (h₂ v).1 hv
+  · intro hv₁ hv₃
+    by_cases hv₂ : τ₂.isSet v
+    · rw [((h₂ v).1 hv₂).1]
+      exact ((h₁ v).2 hv₁) hv₂
+    · exact (h₂ v).2 hv₂ hv₃
+
+theorem entails_of_extended {τ₁ τ₂ : PPA} {offset : Nat} :
+    extended τ₁ τ₂ offset → τ₂.toPropFun ≤ τ₁ := by
+  intro hext
+  apply entails_ext.mpr
+  intro τ hτ₂
+  rw [satisfies_iff_vars] at hτ₂ ⊢
+  intro v b hv
+  have := (hext v).1
+  simp [isSet_iff, hv] at this
+  exact hτ₂ this.2
+
+theorem extended_setLitFor_of_none {τ : PPA} {l : ILit} :
+    τ.litValue? l = none → ∀ offset, extended τ (τ.setLitFor l offset) offset := by
+  intro hl offset v
+  constructor
+  · intro hv
+    by_cases hvar : (toVar l) = v
+    · rw [isSet_iff] at hv
+      have := litValue?_eq_varValue?_none hl
+      rw [hvar] at this
+      rw [this] at hv
+      contradiction
+    · simp [isSet_setLitFor_of_ne' hvar, hv, setLitFor_isSetFor_of_ne' hvar,
+        varValue?_setLitFor_of_ne hvar]
+  · intro hv hlv
+    by_cases hvar : (toVar l) = v
+    · simp [setLitFor, hvar]
+    · simp [isSet_setLitFor_of_ne' hvar] at hlv
+      exact absurd hlv hv
+
+@[simp]
+theorem uniform_new (maxVar : Nat) (offset : Nat) : uniform (new maxVar) offset := by
+  simp [uniform, isSet, isSetFor, varValue?_new]
+
+@[simp]
+theorem uniform_reset (τ : PPA) (offset : Nat) : uniform τ.reset offset := by
+  simp [uniform, isSet, isSetFor, varValue?_reset]
+
+theorem uniform_of_extended_reset {τ₁ τ₂ : PPA} {offset : Nat} :
+    extended (τ₁.reset) τ₂ offset → uniform τ₂ offset := by
+  simp [extended, uniform]
+
+theorem uniform_of_uniform_of_extended {τ₁ τ₂ : PPA} {offset : Nat} :
+    uniform τ₁ offset → extended τ₁ τ₂ offset → uniform τ₂ offset := by
+  simp [uniform, extended]
+  intro hτ₁ h_ext v hv
+  by_cases isSet τ₁ v <;> aesop
+
+theorem uniform_bump_of_uniform_of_extended {τ₁ τ₂ : PPA} {offset : Nat} :
+    offset > 1 → uniform τ₁ offset → extended τ₁ τ₂ 0 →
+      uniform τ₂.bump (offset - 1) ∧ τ₂.bump.toPropFun = τ₁.toPropFun := by
+  sorry
+  done
+
+/-! Assuming negated clauses -/
 
 /-- Set `l ↦ ⊥` for each `l ∈ C` and leave the rest of the assignment untouched.
 If the current assignment contains literals appearing in `C`, they will be overwritten. -/
@@ -447,240 +1029,242 @@ theorem setNegatedClause_cons (τ : PPA) (l : ILit) (ls : List ILit) :
   rw [setNegatedClause_eq_setNegatedClauseFor]
   exact setNegatedClauseFor_cons _ _ _ _
 
-/-! ### Lemmas about `reset` -/
+/-! Assuming negation of clause, in an Exceptional way. -/
 
-theorem lt_reset_generation (τ : PPA) : ∀ i ∈ τ.reset.assignment.data, i.natAbs < τ.reset.generation := by
-  dsimp [reset]
-  intro i h
-  have := τ.le_maxGen i h
-  linarith
+def assumeNegatedClause (τ : PPA) (C : IClause) : Except PPA PPA :=
+  C.foldlM (init := τ) (fun τ l =>
+    match τ.litValue? l with
+    | none       => .ok <| τ.setLit (-l)
+    | some false => .ok <| τ
+    | some true  => .error τ)
 
-@[simp]
-theorem varValue?_reset (τ : PPA) (v : IVar) : τ.reset.varValue? v = none := by
-  unfold varValue?
-  split
-  . rfl
-  . split
-    . next n hn h =>
-      have : n ∈ τ.reset.assignment.data := by
-        simp_rw [Array.get?_eq_getElem?, Array.getElem?_eq_data_get?, List.get?_eq_some] at hn
-        have ⟨_, hn⟩ := hn
-        rw [← hn]
-        apply List.get_mem
-      have := τ.lt_reset_generation n this
-      linarith
-    . rfl
+-- Assumes the negation of the clause, where unset literals are set to false
+-- (i.e., their negations are set to true) with the provided offset. If the
+-- provided PPA satisfies the clause, then an error is thrown.
+-- Any literal that is initially set to true, it's "bump" value is untouched.
+def assumeNegatedClauseFor (τ : PPA) (C : IClause) (bumps : Nat) : Except PPA PPA :=
+  C.foldlM (init := τ) (fun τ l =>
+    match τ.litValue? l with
+    | none       => .ok <| τ.setLitFor (-l) bumps
+    | some false => .ok <| τ
+    | some true  => .error τ)
 
-@[simp]
-theorem litValue?_reset (τ : PPA) (l : ILit) : (τ.reset).litValue? l = none := by
-  simp [litValue?, varValue?_reset]
+section assumeNegatedClause
 
-@[simp]
-theorem toPropFun_reset (τ : PPA) : τ.reset.toPropFun = ⊤ := by
-  ext; simp [satisfies_iff_vars]
+variable {τ τ' : PPA} {C : IClause} {bumps : Nat}
 
-/-! ### Lemmas about `setVar`, `setLit` -/
+theorem assumeNegatedClause_eq_assumeNegatedClauseFor (τ : PPA) (C : IClause) :
+    τ.assumeNegatedClause C = τ.assumeNegatedClauseFor C 0 := by
+  simp [assumeNegatedClause, assumeNegatedClauseFor, setLit_eq_setLitFor]
 
 @[simp]
-theorem varValue?_setVar (τ : PPA) (v : IVar) (b : Bool) : (τ.setVar v b).varValue? v = some b := by
-  unfold varValue? setVar
-  cases b <;> simp [Array.getElem?_setF, τ.generation.property]
+theorem assumeNegatedClause_empty (τ : PPA) : τ.assumeNegatedClause #[] = .ok τ := by
+  simp [assumeNegatedClause]; rfl
 
 @[simp]
-theorem varValue?_setVar_of_ne {v v' : IVar} :
-    v ≠ v' → ∀ (τ : PPA) (b : Bool), (τ.setVar v b).varValue? v' = τ.varValue? v' := by
-  unfold varValue? setVar
-  intro hNe
-  simp [Array.getElem?_setF' _ _ _ (index_ne_iff.mpr hNe)]
+theorem assumedNegatedClauseFor_empty (τ : PPA) (bumps : Nat) :
+    τ.assumeNegatedClauseFor #[] bumps = .ok τ := by
+  simp [assumeNegatedClauseFor]; rfl
 
 @[simp]
-theorem varValue?_setLit (τ : PPA) (l : ILit) : (τ.setLit l).varValue? (toVar l) = some (polarity l) := by
-  simp [setLit, varValue?_setVar]
+theorem assumeNegatedClauseFor_nil (τ : PPA) (bumps : Nat) :
+    τ.assumeNegatedClauseFor { data := [] } bumps = .ok τ := by
+  simp [assumeNegatedClauseFor]; rfl
 
-@[simp]
-theorem litValue?_setLit (τ : PPA) (l : ILit) : (τ.setLit l).litValue? l = some true := by
-  simp [litValue?, setLit, varValue?_setVar]
-
-@[simp]
-theorem varValue?_setLit_of_ne {l : ILit} {v : IVar} :
-    toVar l ≠ v → ∀ (τ : PPA), (τ.setLit l).varValue? v = τ.varValue? v := by
-  intro h
-  simp [setLit, varValue?_setVar_of_ne h]
-
-@[simp]
-theorem litValue?_setLit_of_ne {l l' : ILit} :
-    toVar l ≠ toVar l' → ∀ (τ : PPA), (τ.setLit l).litValue? l' = τ.litValue? l' := by
-  intro h
-  simp [litValue?, varValue?_setLit_of_ne h]
-
-/-! ### `toPropFun` model -/
-
-theorem toPropFun_setVar_lt_of_none {τ : PPA} {v : IVar} :
-    τ.varValue? v = none → ∀ (b : Bool), (τ.setVar v b).toPropFun ≤ τ := by
-  intro h b
-  apply entails_ext.mpr
-  intro σ hσ
-  rw [satisfies_iff_vars] at hσ ⊢
-  intro y b hy
-  apply hσ
-  rwa [varValue?_setVar_of_ne]
-  intro hEq
-  rw [hEq, hy] at h
-  contradiction
-
-theorem toPropFun_setLit_lt_of_none {τ : PPA} {l : ILit} :
-    τ.litValue? l = none → (τ.setLit l).toPropFun ≤ τ := by
-  intro
-  simp_all only [litValue?, setLit, Option.map_eq_none', toPropFun_setVar_lt_of_none]
-
-theorem toPropFun_setLit_lt (τ : PPA) (l : ILit) :
-    (τ.setLit l).toPropFun ≤ l := by
-  apply entails_ext.mpr
-  intro σ hσ
-  rw [satisfies_iff_lits] at hσ
-  apply hσ
-  apply litValue?_setLit
-
-theorem lt_toPropFun_setLit (τ : PPA) (l : ILit) :
-    τ.toPropFun ⊓ l ≤ (τ.setLit l) := by
-  apply entails_ext.mpr
-  intro σ hσ
-  have ⟨hσ, hσ'⟩ := satisfies_conj.mp hσ
-  rw [satisfies_iff_vars] at hσ ⊢
-  intro x b hx
-  by_cases h : toVar l = x
-  . simp_all [setLit, LitVar.satisfies_iff]
-  . apply hσ
-    rwa [τ.varValue?_setLit_of_ne h] at hx
-
-theorem toPropFun_setLit_of_none {τ : PPA} {l : ILit} :
-    τ.litValue? l = none → (τ.setLit l).toPropFun = τ.toPropFun ⊓ l := by
-  intro h
-  refine le_antisymm ?_ (τ.lt_toPropFun_setLit l)
-  simp [toPropFun_setLit_lt_of_none h, toPropFun_setLit_lt]
-
--- TODO: This spec isn't correct, and needs an assumption that τ and C don't overlap,
--- or that C isn't a tautology?
--- Or just write an updated setNegatedClause that evaluates the literals as they
--- come in and return a Bool or an option or something
-theorem setNegatedClause_of_le {τ : PPA} {C : IClause} :
-    τ.toPropFun ≤ C.toPropFun → τ.setNegatedClause C = τ.toPropFun ⊓ Cᶜ := by
+theorem assumeNegatedClauseFor_ok :
+    (τ.assumeNegatedClauseFor C bumps) = .ok τ' →
+      τ'.toPropFun = ↑τ ⊓ (↑C)ᶜ ∧ extended τ τ' bumps := by
   have ⟨C⟩ := C
   induction' C with l ls ih generalizing τ
-  · simp
-  · simp
-    done
-  done
-#exit
-@[simp]
-theorem setNegatedClause_reset_toPropFun (τ : PPA) (C : IClause) :
-    (τ.reset.setNegatedClause C).toPropFun = (C.toPropFun)ᶜ := by
+  · simp; rintro rfl; simp
+  · simp [assumeNegatedClauseFor, -Array.size_mk] at ih ⊢
+    cases hτ : τ.litValue? l
+    <;> simp [hτ]
+    <;> rw [← inf_assoc]
+    · intro h
+      rw [← litValue?_negate_none_iff] at hτ
+      rcases @ih (τ.setLitFor (-l) bumps) h with ⟨h₁, h₂⟩
+      simp [toPropFun_setLit_of_none hτ] at h₁
+      exact ⟨h₁, extended_trans (extended_setLitFor_of_none hτ _) h₂⟩
+    · rename Bool => b
+      cases b <;> intro h
+      · have := @ih τ h
+        rw [litValue?_false_iff_eq_inf] at hτ
+        rwa [hτ] at this
+      · contradiction
+
+theorem assumeNegatedClauseFor_error :
+    (τ.assumeNegatedClauseFor C bumps) = .error τ' → τ.toPropFun ≤ C := by
   have ⟨C⟩ := C
   induction' C with l ls ih generalizing τ
-  · simp [setNegatedClause]
-  · rw [setNegatedClause, Array.foldl_eq_foldl_data]
-    simp
-    done
+  · simp [toPropFun_ne_bot]
+  · simp [assumeNegatedClauseFor, -Array.size_mk]
+    cases hτ : τ.litValue? l
+    <;> simp [hτ]
+    <;> intro h
+    · have := ih h
+      rw [← litValue?_negate_none_iff] at hτ
+      simp [toPropFun_setLit_of_none hτ] at this
+      exact sdiff_le_iff.mp this
+    · rename Bool => b
+      cases b
+      · exact le_sup_of_le_right (ih h)
+      · rw [litValue?_true_iff] at hτ
+        exact le_sup_of_le_left hτ
 
-  done
+-- TODO: Is this used?
+theorem assumeNegatedClauseFor_error_of_le {τ : PPA} {C : IClause} (bumps : Nat) :
+    τ.toPropFun ≤ C → ∃ τ', (τ.assumeNegatedClauseFor C bumps) = .error τ' := by
+  have ⟨C⟩ := C
+  induction' C with l ls ih generalizing τ
+  · simp [toPropFun_ne_bot]
+  · simp [assumeNegatedClauseFor, -Array.size_mk]
+    intro h
+    cases hτ : τ.litValue? l
+    · have : toPropFun (setLitFor τ (-l) bumps) = τ.toPropFun ⊓ lᶜ := by
+        rw [← litValue?_negate_none_iff] at hτ
+        simp [toPropFun_setLit_of_none hτ]
+      replace h := inf_compl_le_iff_le_sup.mpr h
+      rw [← this] at h
+      exact ih h
+    · rename Bool => b
+      cases b
+      · rw [← inf_compl_le_iff_le_sup, ← litValue?_false_iff_eq_inf.mp hτ] at h
+        exact ih h
+      · simp [hτ]; exact ⟨τ, rfl⟩
 
-#exit
+-- CC: Ideally we'd say l ≤ C as a stand-in for ∈, but if C is a tautology,
+--     then this applies for all literals. Of course, if C is a tautology,
+--     then assumeNegatedClause returns error instead of ok, but setting
+--     that up for this theorem seems like overkill.
+-- CC TODO: Lots of duplication. Clean up with lemmas later.
+-- TODO: Remove?
+theorem assumeNegatedClauseFor_ok_spec {τ τ' : PPA} {C : IClause} {bumps : Nat} :
+    (τ.assumeNegatedClauseFor C bumps) = .ok τ' →
+      ∀ (l : ILit), (l ∈ C →
+        (τ'.litValue? l = some false) ∧
+        (τ.litValue? l = none → τ'.isSetFor (toVar l) = bumps + 1) ∧
+        (τ.litValue? l = some false → τ'.isSetFor (toVar l) = τ.isSetFor (toVar l))) ∧
+         (l ∉ C → (-l) ∉ C → τ'.litValue? l = τ.litValue? l ∧ τ'.isSetFor (toVar l) = τ.isSetFor (toVar l)) := by
+  have ⟨C⟩ := C
+  induction' C with l ls ih generalizing τ
+  · simp [← Array.mem_data]; rintro rfl l; exact ⟨rfl, rfl⟩
+  · intro h
+    have h_copy := h
+    simp [assumeNegatedClauseFor, ← Array.mem_data, -Array.size_mk] at h ⊢
+    simp [← Array.mem_data] at ih
+    intro l'
+    constructor
+    · rintro (rfl | hmem)
+      · split at h <;> rename litValue? τ l' = _ => heq
+        · by_cases hls : l' ∈ ls
+          · rcases (ih h l').1 hls with ⟨h₁, _, h₃⟩
+            simp at h₃
+            simp [heq]
+            exact ⟨h₁, h₃⟩
+          · by_cases hlsn : (-l') ∈ ls
+            · have : Clause.toPropFun ({ data := l' :: ls } : IClause) = ⊤ := by
+                rw [Clause.tautology_iff]
+                use l'
+                simp [← Array.mem_data] at hls ⊢
+                exact ⟨_, hlsn, by simp⟩
+              replace this : τ.toPropFun ≤ ({ data := l' :: ls } : IClause) := by
+                rw [this]; exact le_top
+              rcases assumeNegatedClauseFor_error_of_le bumps this with ⟨τ'', hτ''⟩
+              rw [hτ''] at h_copy
+              injection h_copy
+            · rcases (ih h l').2 hls hlsn with ⟨h₁, h₂⟩
+              simp at h₁ h₂
+              simp [heq]
+              exact ⟨h₁, h₂⟩
+        · by_cases hls : l' ∈ ls
+          · exact (ih h l').1 hls
+          · by_cases hlsn : (-l') ∈ ls
+            · have : Clause.toPropFun ({ data := l' :: ls } : IClause) = ⊤ := by
+                rw [Clause.tautology_iff]
+                use l'
+                simp [← Array.mem_data] at hls ⊢
+                exact ⟨_, hlsn, by simp⟩
+              replace this : τ.toPropFun ≤ ({ data := l' :: ls } : IClause) := by
+                rw [this]; exact le_top
+              rcases assumeNegatedClauseFor_error_of_le bumps this with ⟨τ'', hτ''⟩
+              rw [hτ''] at h_copy
+              injection h_copy
+            · rcases (ih h l').2 hls hlsn with ⟨h₁, h₂⟩
+              simp [heq] at h₁ ⊢
+              exact ⟨h₁, h₂⟩
+        · have : τ.toPropFun ≤ ({ data := l' :: ls } : IClause) := by
+            simp [le_sup_of_le_left (litValue?_true_iff.mp heq)]
+          rcases assumeNegatedClauseFor_error_of_le bumps this with ⟨τ'', hτ''⟩
+          rw [hτ''] at h_copy
+          injection h_copy
+      · split at h <;> rename litValue? τ l = _ => heq
+        · rcases (ih h l').1 hmem with ⟨h₁, h₂, h₃⟩
+          use h₁
+          rcases eq_trichotomy l l' with (rfl | rfl | hll')
+          · simp [heq] at h₃ ⊢
+            exact h₃
+          · have : Clause.toPropFun ({ data := -l' :: ls } : IClause) = ⊤ := by
+              rw [Clause.tautology_iff]
+              use l'
+              simp [← Array.mem_data]
+              exact hmem
+            replace this : τ.toPropFun ≤ ({ data := -l' :: ls } : IClause) := by
+              rw [this]; exact le_top
+            rcases assumeNegatedClauseFor_error_of_le bumps this with ⟨τ'', hτ''⟩
+            rw [hτ''] at h_copy
+            injection h_copy
+          · have : toVar (-l) ≠ toVar l' := by simp [hll']
+            rw [litValue?_setLitFor_of_ne this] at h₂ h₃
+            rw [setLitFor_isSetFor_of_ne this] at h₃
+            exact ⟨h₂, h₃⟩
+        · exact (ih h l').1 hmem
+        · injection h
+    · simp [not_or]
+      intro hne hmem h_neg_ne h_neg_mem
+      split at h <;> rename litValue? τ l = _ => heq
+      · rcases (ih h l').2 hmem h_neg_mem with ⟨h₁, h₂⟩
+        have : toVar (-l) ≠ toVar l' := by
+          rcases eq_trichotomy l l' with (rfl | rfl | h) <;> try contradiction
+          simp [h]
+        rw [litValue?_setLitFor_of_ne this] at h₁
+        rw [setLitFor_isSetFor_of_ne this] at h₂
+        exact ⟨h₁, h₂⟩
+      · exact (ih h l').2 hmem h_neg_mem
+      · injection h
 
-/-! # SetFor judgment -/
+/-
+For a general statement, we might say something like:
 
-section isSetFor
+theorem assumeNegatedClauseFor_ok {τ τ' : PPA} {C : IClause} {bumps : Nat} :
+    (τ.assumeNegatedClauseFor C bumps) = .ok τ' →
+      ∀ (l : ILit), (l ∈ C →
+        (τ'.litValue? l = some false) ∧
+        (τ.litValue? l = none → τ'.isSetFor (toVar l) = bumps + 1) ∧
+        (τ.litValue? l = some false → τ'.isSetFor (toVar l) = τ.isSetFor (toVar l))) ∧
+         (l ∉ C → (-l) ∉ C → τ'.litValue? l = τ.litValue? l ∧ τ'.isSetFor (toVar l) = τ.isSetFor (toVar l))
 
-variable {τ : PPA} {v : IVar} {n : Nat}
+However, the SR checker only assumes the negated clause on a reset assignment.
+So we prove the specific case, which allows us to write `uniform` instead of
+the complicated expression above as a postcondition.
+-/
 
-def isSet (τ : PPA) (v : IVar) : Prop :=
-  τ.varValue? v ≠ none
+-- Just to simplify things, we include the postcondition from aNCF_ok
+theorem assumeNegatedClauseFor_reset_ok {τ τ' : PPA} {C : IClause} {bumps : Nat} :
+  (τ.reset.assumeNegatedClauseFor C bumps) = .ok τ' →
+    τ'.toPropFun = (C.toPropFun)ᶜ ∧ uniform τ' bumps := by
+  intro h
+  have := assumeNegatedClauseFor_ok h
+  simp at this
+  rcases this with ⟨h₁, h₂⟩
+  exact ⟨h₁, uniform_of_extended_reset h₂⟩
 
--- Says that the provided variable is set for n "bumps"
--- Add 1 because setting the variable sets its assignment value to τ.generation, so it's set for 1 bump
-def isSetFor (τ : PPA) (v : IVar) (n : Nat) : Prop :=
-  ((τ.assignment.getD v.index 0).natAbs + 1) - τ.generation.val = n
-
-theorem isSet_of_isSetFor_pos : n > 0 → isSetFor τ v n → isSet τ v := by
-  intro hn
-  simp [isSet, isSetFor, varValue?]
-  match hv : τ.assignment[v.index]? with
-  | none => simp [hv]; aesop
-  | some g =>
-    simp [hv]
-    rintro rfl
-    exact le_of_lt_succ (Nat.lt_of_sub_pos hn)
-
-theorem isSet_of_isSetFor_succ {n : Nat} {τ : PPA} {v : IVar} :
-    isSetFor τ v (n + 1) → isSet τ v :=
-  fun h => isSet_of_isSetFor_pos (succ_pos _) h
-
-theorem varValue?_ne_none_of_isSetFor {τ : PPA} {v : IVar} {n : Nat} :
-    n > 0 → isSetFor τ v n → τ.varValue? v ≠ none := by
-  intro hn
-  simp [isSetFor, varValue?]
-  rintro rfl
-  replace hn := Nat.lt_of_sub_pos hn
-  match hv : τ.assignment[v.index]? with
-  | none => simp [hv] at hn
-  | some g =>
-    simp [hv] at hn
-    simp [le_of_lt_succ hn]
-
-theorem varValue?_ne_none_of_isSetFor' {τ : PPA} {v : IVar} {n : Nat} :
-    isSetFor τ v (n + 1) → τ.varValue? v ≠ none :=
-  varValue?_ne_none_of_isSetFor (succ_pos _)
-
--- Cayden TODO: Think about whether should be succ or hypothesis (> 0)
-theorem isSetFor_of_varValue?_ne_none {τ : PPA} {v : IVar} :
-    τ.varValue? v ≠ none → ∃ (n : Nat), isSetFor τ v (n + 1) := by
-  cases hv : τ.assignment[v.index]?
-  <;> simp [varValue?, hv]
-  rename Int => g
-  intro hg
-  use (Int.natAbs g - τ.generation)
-  simp [isSetFor, hv, Nat.sub_add_comm hg]
-
-theorem isSetFor_zero_iff {τ : PPA} {v : IVar} :
-    isSetFor τ v 0 ↔ τ.varValue? v = none := by
-  cases hv : τ.assignment[v.index]?
-  <;> simp [isSetFor, varValue?, hv]
-  · exact τ.generation.property
-  · exact succ_le
-
-theorem setVar_isSetFor (τ : PPA) (v : IVar) (b : Bool) : isSetFor (τ.setVar v b) v 1 := by
-  simp [isSetFor, setVar]; cases b <;> simp
-
-theorem setLit_isSetFor (τ : PPA) (l : ILit) : isSetFor (τ.setLit l) (toVar l) 1 :=
-  setVar_isSetFor _ _ _
-
-theorem setVarFor_isSetFor (τ : PPA) (v : IVar) (b : Bool) (extraBumps : Nat) :
-    isSetFor (τ.setVarFor v b extraBumps) v (extraBumps + 1) := by
-  simp [isSetFor, setVarFor]; cases b <;> simp
-  · rw [← Int.neg_add, Int.natAbs_neg]
-    have : Int.natAbs (extraBumps + τ.generation) = extraBumps + τ.generation := rfl
-    rw [this, add_assoc, add_comm τ.generation.val 1, ← add_assoc, Nat.add_sub_cancel]
-  · have : Int.natAbs (τ.generation + extraBumps) = τ.generation + extraBumps := rfl
-    rw [this, add_comm τ.generation.val _, add_assoc, add_comm τ.generation.val 1, ← add_assoc, Nat.add_sub_cancel]
-
-theorem setLitFor_isSetFor (τ : PPA) (l : ILit) (extraBumps : Nat) :
-    isSetFor (τ.setLitFor l extraBumps) (toVar l) (extraBumps + 1) :=
-  setVarFor_isSetFor _ _ _ _
-
-theorem isSetFor_bump {τ : PPA} {v : IVar} {n : Nat} :
-    isSetFor τ v n → isSetFor τ.bump v (n - 1) := by
-  simp [isSetFor, bump]
-  rintro rfl
-  rw [← sub_add_eq, ← Nat.add_sub_add_right]
-
-theorem isSetFor_reset (τ : PPA) (v : IVar) : isSetFor τ.reset v 0 :=
-  isSetFor_zero_iff.mpr (varValue?_reset τ v)
-
-end isSetFor
+end assumeNegatedClause /- section -/
 
 /-! ## Tautology checking -/
 
 /-- Check if the given clause is a tautology.
-The current partial assignment is ignored,
+The current partial assignment is reset,
 and the returned assignment is unspecified. -/
 def checkTauto (τ : PPA) (C : IClause) : PPA × { b : Bool // b ↔ C.toPropFun = ⊤ } :=
   go 0 ⟨τ.reset, by simp [Clause.toPropFun]⟩
@@ -699,28 +1283,21 @@ where
         have : (↑l)ᶜ ≤ C.toPropFun := by
           apply le_trans this
           rw [τ.property]
-          apply C.toPropFun_take_lt
-        have : l ≤ C.toPropFun := C.toPropFun_getElem_lt _
+          apply C.toPropFun_take_le
+        have : l ≤ C.toPropFun := C.toPropFun_getElem_le _
         have : ⊤ ≤ C.toPropFun := by
           rw [← sup_compl_eq_top (x := l.toPropFun)]
           apply sup_le <;> assumption
         simp only [top_le_iff.mp this]⟩)
     | some false =>
       go (i + 1) ⟨τ.val.setLit (-l), by
-        have : (τ.val.setLit (-l)).toPropFun ≤ τ.val.toPropFun := by
-          apply entails_ext.mpr
-          intro σ hσ
-          rw [satisfies_iff_vars] at hσ ⊢
-          intro x b hx
-          apply hσ
-          by_cases hEq : toVar (-l) = x
-          . aesop (add norm unfold litValue?, norm unfold setLit)
-          . rwa [τ.val.varValue?_setLit_of_ne hEq]
-        have := τ.val.toPropFun_setLit_lt (-l)
-        have : (τ.val.setLit (-l)).toPropFun = τ.val.toPropFun ⊓ (-l).toPropFun := by
-          refine le_antisymm ?_ (τ.val.lt_toPropFun_setLit _)
-          simp_all only [le_inf_iff, and_self]
-        simp [*, τ.property]⟩
+        rw [hCl]
+        conv => rhs; lhs; rw [← τ.property]
+        rw [← litValue?_negate_some_iff', Bool.not_false] at h
+        rw [toPropFun_setLit_of_true h]
+        rw [litValue?_negate_some_iff, Bool.not_true, litValue?_false_iff] at h
+        rw [left_eq_sup, ← compl_le_compl_iff_le, compl_compl]
+        exact h⟩
     | none =>
       go (i + 1) ⟨τ.val.setLit (-l), by
         have : (τ.val.setLit (-l)).toPropFun = τ.val.toPropFun ⊓ (-l).toPropFun := by
@@ -737,7 +1314,7 @@ where
       have that : C = { data := C.data } := rfl
       simp_rw [C.data.take_length_le this, ← that, h, compl_eq_top] at hEq
       assumption⟩)
-termination_by go i τ => C.size - i
+termination_by C.size - i
 
 /-! ## Unit propagation -/
 
@@ -817,7 +1394,8 @@ where
           exfalso
           rcases (satisfies_conj.mp hσ) with ⟨hσC, hστ⟩
           have ⟨l, hl, hσl⟩ := Clause.satisfies_iff.mp hσC
-          have ⟨k, hk⟩ := Array.mem_data_iff.mp hl
+          rw [← Array.mem_data] at hl
+          have ⟨k, hk⟩ := Array.mem_data_iff_exists_fin.mp hl
           rw [not_lt] at hi
           have := hLits k (lt_of_lt_of_le k.is_lt hi)
           simp only [false_or] at this
@@ -835,7 +1413,8 @@ where
             intro σ hσ
             have ⟨hστ, hσC⟩ := satisfies_conj.mp hσ
             have ⟨l, hl, hσl⟩ := Clause.satisfies_iff.mp hσC
-            have ⟨i, hi⟩ := Array.mem_data_iff.mp hl
+            rw [← Array.mem_data] at hl
+            have ⟨i, hi⟩ := Array.mem_data_iff_exists_fin.mp hl
             have := i.is_lt
             have := hLits i (by linarith)
             rcases this with hEq | hτl
@@ -843,7 +1422,7 @@ where
               rwa [hi]
             . exfalso
               exact (satisfies_neg.mp <| entails_ext.mp hτl _ hστ) (hi ▸ hσl))⟩
-  termination_by go i _ _ _ => C.size - i
+  termination_by C.size - i
 
 -- Cayden's alternate implementation of unit propagation (TODO: Compare for efficiency)
 
@@ -861,13 +1440,13 @@ inductive MUPDone where
   | satisfied
   | multipleUnassignedLiterals
 
-open ResultT MUPResult MUPDone
+open Except MUPResult MUPDone
 
-abbrev UPBox := ResultT MUPDone (Option ILit)
+abbrev UPBox := Except MUPDone (Option ILit)
 
 def pevalUP (τ : PPA) (unit? : Option ILit) (l : ILit) : UPBox :=
   match τ.litValue? l with
-  | some true => done .satisfied
+  | some true => error .satisfied
   | some false => ok unit?
   | none =>
     match unit? with
@@ -875,7 +1454,7 @@ def pevalUP (τ : PPA) (unit? : Option ILit) (l : ILit) : UPBox :=
     | some u =>
       if u = l then ok unit?
       -- Assume tautology cannot occur in clause, so two unassiged literals exits early
-      else done .multipleUnassignedLiterals
+      else error .multipleUnassignedLiterals
 
 def foldUP (τ : PPA) (C : IClause) := C.foldlM (pevalUP τ) none
 
@@ -883,8 +1462,8 @@ def unitProp (τ : PPA) (C : IClause) : MUPResult :=
   match foldUP τ C with
   | ok none => .falsified
   | ok (some lit) => .unit lit
-  | done .satisfied => .satisfied
-  | done .multipleUnassignedLiterals => .multipleUnassignedLiterals
+  | error .satisfied => .satisfied
+  | error .multipleUnassignedLiterals => .multipleUnassignedLiterals
 
 def motive_fn (τ : PPA) (C : IClause) : ℕ → Option ILit → Prop
   | idx, none => ∀ ⦃i : Fin C.size⦄, i < idx → τ.litValue? C[i] = some false
@@ -902,7 +1481,7 @@ theorem SatisfiesM_UP (τ : PPA) (C : IClause) :
     (h0 := by simp [motive_fn]) -- Why do I have to define it right above? Putting it inline with (motive :=) had sorryAx problems
     (hf := by
       unfold motive_fn
-      simp only [SatisfiesM_ResultT_eq, getElem_fin]
+      simp only [SatisfiesM_Except_eq, getElem_fin]
       intro i box ih
         -- Cayden question: Is this proof more compact if I use pattern-matching with intro?
       intro
@@ -934,7 +1513,7 @@ theorem SatisfiesM_UP (τ : PPA) (C : IClause) :
           | none =>
             subst h_box
             simp at hbox
-            use Array.mem_data_iff.mpr ⟨i, hbox⟩, hbox ▸ h_tau
+            use Array.mem_data_iff_exists_fin.mpr ⟨i, hbox⟩, hbox ▸ h_tau
             intro j hj₁ hj₂
             rcases lt_or_eq_of_le (le_of_lt_succ hj₁) with (h | h)
             · exact ih h
@@ -968,14 +1547,14 @@ theorem SatisfiesM_UP (τ : PPA) (C : IClause) :
   intro
   | none =>
     intro h l hl
-    rcases Array.mem_data_iff.mp hl with ⟨i, rfl⟩
+    rcases Array.mem_data_iff_exists_fin.mp hl with ⟨i, rfl⟩
     exact h i.isLt
   | some lit =>
     simp [motive_fn]
     intro hlit₁ hlit₂ ih
     use hlit₁, hlit₂
     intro l hl₁ hl₂
-    rcases Array.mem_data_iff.mp hl₁ with ⟨i, rfl⟩
+    rcases Array.mem_data_iff_exists_fin.mp hl₁ with ⟨i, rfl⟩
     exact ih hl₂
 
 -- Cayden TODO/Q: Allow for [pattern_match] on ResultT? What is [unbox]?
@@ -992,7 +1571,8 @@ theorem contradiction_of_UP_falsified {τ : PPA} {C : IClause} :
   rw [satisfies_conj] at hτ'
   rcases hτ' with ⟨hττ', hCτ'⟩
   have ⟨lit, hlit, hτ'lit⟩ := Clause.satisfies_iff.mp hCτ'
-  have hlv := SatisfiesM_ResultT_eq.mp (SatisfiesM_UP τ C) none h lit hlit
+  rw [← Array.mem_data] at hlit
+  have hlv := SatisfiesM_Except_eq.mp (SatisfiesM_UP τ C) none h lit hlit
   clear h hCτ' hlit
   have := satisfies_iff_vars.mp hττ'
   replace hτ'lit := LitVar.satisfies_iff.mp hτ'lit
@@ -1005,139 +1585,37 @@ theorem contradiction_of_UP_falsified {τ : PPA} {C : IClause} :
 -- Is it better to say that ¬(τ ≤ l), or that τ.litValue? l = none?
 theorem extended_of_UP_unit {τ : PPA} {C : IClause} {l : ILit} :
     τ.unitProp C = .unit l →
-      C.toPropFun ⊓ τ.toPropFun ≤ l.toPropFun
-      ∧ ¬(τ.toPropFun ≤ l.toPropFun) -- Cayden: see litValue?_none_iff
-      ∧ ¬(τ.toPropFun ≤ l.toPropFunᶜ) := by
+      l ∈ C ∧
+      τ.litValue? l = none ∧
+      C.toPropFun ⊓ τ.toPropFun ≤ l.toPropFun ⊓ τ := by
   unfold unitProp
   intro h_unit
   split at h_unit
   <;> try simp at h_unit
   rename ILit => lit; subst h_unit
   rename (foldUP τ C = ok (some lit)) => h
-  have hlv := SatisfiesM_ResultT_eq.mp (SatisfiesM_UP τ C) (some lit) h
+  have hlv := SatisfiesM_Except_eq.mp (SatisfiesM_UP τ C) (some lit) h
   clear h
   rcases hlv with ⟨hlit, hτlit, ih⟩
-  constructor
-  · refine entails_ext.mpr fun τ' hτ' => ?_
-    rw [satisfies_conj] at hτ'; rcases hτ' with ⟨hCτ', hττ'⟩
-    rw [satisfies_iff_lits] at hττ'
-    rw [Clause.satisfies_iff] at hCτ'; rcases hCτ' with ⟨m, hm, hmτ'⟩
-    by_cases heq : m = lit
-    · subst heq; exact hmτ'
-    · replace ih := ih _ hm heq
-      have := litValue?_negate τ m
-      simp only [ih, Option.map_some', Bool.not_false] at this
-      have := hττ' this
-      simp at this
-      exact absurd hmτ' this
-  · exact litValue?_none_iff.mp hτlit
+  rw [← Array.mem_data]
+  use hlit, hτlit
+  refine entails_ext.mpr fun τ' hτ' => ?_
+  rw [satisfies_conj] at hτ'; rcases hτ' with ⟨hCτ', hττ'⟩
+  rw [satisfies_iff_lits] at hττ'
+  rw [Clause.satisfies_iff] at hCτ'; rcases hCτ' with ⟨m, hm, hmτ'⟩
+  by_cases heq : m = lit
+  · subst heq
+    rw [← satisfies_iff_lits] at hττ'
+    rw [satisfies_conj]
+    exact ⟨hmτ', hττ'⟩
+  · rw [← Array.mem_data] at hm
+    replace ih := ih _ hm heq
+    have := litValue?_negate τ m
+    simp only [ih, Option.map_some', Bool.not_false] at this
+    have := hττ' this
+    simp at this
+    exact absurd hmτ' this
 
-#exit
-
-/-
-theorem SatisfiesM_foldUPs (τ : PPA) (L : Array IClause) :
-    SatisfiesM (fun τ' => (clauses_to_PropFun L) ⊓ τ ≤ τ') (foldUPs τ L) := by
-  have := L.SatisfiesM_foldlM (init := (τ : PPA)) (f := applyUPHint)
-    (motive := fun idx τ' => (clauses_to_PropFun (L.take idx)) ⊓ τ ≤ τ')
-  done
--/
-
-/-
-def motive_fn (τ : PPA) (C : IClause) : ℕ → Option ILit → Prop
-  | idx, none => ∀ ⦃i : Fin C.size⦄, i < idx → τ.litValue? C[i] = some false
-  | idx, some lit => lit ∈ C.data ∧ τ.litValue? lit = none ∧
-      (∀ ⦃j : Fin C.size⦄, j < idx → C[j] ≠ lit → τ.litValue? C[j] = some false)
-
-    SatisfiesM (fun
-      -- If there are no unassigned literals, then all should be false
-      | none => ∀ l ∈ C.data, τ.litValue? l = some false
-      | some lit => lit ∈ C.data ∧ τ.litValue? lit = none ∧
-          (∀ l ∈ C.data, l ≠ lit → τ.litValue? l = some false)) (foldUP τ C) := by
-  have := C.SatisfiesM_foldlM (init := (none : Option ILit)) (f := pevalUP τ)
-    (motive := motive_fn τ C)
-    (h0 := by simp [motive_fn])
--/
-
-theorem SatisfiesM_foldUPs (τ : PPA) (L : Array IClause) :
-    SatisfiesM (fun τ' => (clauses_to_PropFun L) ⊓ τ ≤ τ') (foldUPs τ L) := by
-  have := L.SatisfiesM_foldlM (init := (τ : PPA)) (f := applyUPHint)
-    (motive := fun idx τ' => ∀ ⦃i : Fin L.size⦄, i < idx → L[i].toPropFun ⊓ τ ≤ τ')
-    (h0 := by
-      sorry
-      done)
-    (hf := by
-      sorry
-      done)
-  done
-
-#exit
-
-theorem foldUPs_correct {τ : PPA} {L : List IClause} :
-    foldUPs τ L = done true → (clauses_to_PropFun L) ⊓ τ = ⊥ := by
-  induction' L with C CS ih generalizing τ
-  · simp [foldUPs]
-  · intro h_UP
-    rw [foldUPs] at h_UP
-    rw [List.foldlM_eq_foldl] at h_UP
-    simp at h_UP
-
-    --simp [List.foldlM_cons, applyUPHint] at h_UP
-    --split at h_UP <;> try simp at h_UP
-
-    done
-  done
-
-#exit
-
-theorem unit_of_foldUPs_cons_ok {τ τ' : PPA} {C : IClause} {L : List IClause} :
-    foldUPs τ (C :: L) = ok τ' → ∃ (l : ILit) (τ'' : PPA), τ.unitProp C = unit l τ'' := by
-  intro h
-  rw [foldUPs, List.foldlM_cons, applyUPHint] at h
-  cases hτ : τ.unitProp C <;> simp [hτ] at h <;> try contradiction
-  exact ⟨_, _, rfl⟩
-
-theorem foldUPs_cons_of_falsified {τ : PPA} {C : IClause} {L : List IClause} :
-    τ.unitProp C = .falsified → foldUPs τ (C :: L) = done true := by
-  intro h; simp [foldUPs, List.foldlM_cons, applyUPHint, h]; rfl
-
-theorem foldUPs_ok {τ τ' : PPA} {L : List IClause} :
-    foldUPs τ L = ok τ' → (clauses_to_PropFun L) ⊓ τ ≤ τ' := by
-  induction' L with C CS ih generalizing τ
-  · simp; rintro rfl; exact Eq.ge rfl
-  · intro h
-    rw [clauses_to_PropFun_cons, inf_comm, ← inf_assoc, inf_comm]
-    rcases unit_of_foldUPs_cons_ok h with ⟨l, σ, hτ⟩
-    rw [foldUPs_cons_of_unit hτ] at h
-    apply le_trans _ (ih h)
-    have := (extended_of_UP_unit hτ).1
-    rw [inf_comm] at this
-    exact inf_le_inf_left _ this
-
-theorem foldUPs_true {τ : PPA} {L : List IClause} :
-    foldUPs τ L = done true → (clauses_to_PropFun L) ⊓ τ ≤ ⊥ := by
-  induction' L with C CS ih generalizing τ
-  · simp
-  · intro h
-    rw [foldUPs, List.foldlM_cons, applyUPHint] at h
-    split at h <;> try injection h <;> try contradiction
-    · rename unitProp τ C = falsified => heq
-      rw [clauses_to_PropFun_cons, inf_comm, ← inf_assoc]
-      exact le_trans inf_le_left (contradiction_of_UP_falsified heq)
-    · rename ILit => l
-      rename PPA => τ'
-      rename unitProp τ C = unit _ _ => heq
-      have := (extended_of_UP_unit heq).1
-      rw [inf_comm] at this
-      rw [clauses_to_PropFun_cons, inf_comm, ← inf_assoc, inf_comm]
-      apply le_trans (inf_le_inf_left (clauses_to_PropFun CS) this)
-      apply ih
-      rw [← h]
-      rfl
-
-#exit
-    --(clauses_to_PropFun (C :: L)) ⊓ τ = ⊥ := by
-
-
-end monadic
+end monadic /- section -/
 
 end PPA

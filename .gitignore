@@ -1,2 +1,4 @@
 /.lake
 *.olean
+
+*.DS_Store

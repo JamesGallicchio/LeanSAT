@@ -10,9 +10,12 @@ Carnegie Mellon University
 
 -/
 
+import LeanSAT.Upstream.ToStd
+import Experiments.ProofChecking.Array
+
 import Mathlib.Data.Array.Basic
 import Mathlib.Data.Nat.Basic
-import LeanSAT.Upstream.ToStd
+import Mathlib.Order.MinMax
 
 structure CArray (α : Type _) where
   data : Array α
@@ -39,6 +42,7 @@ def singleton (v : α) : CArray α := {
   lsize := ⟨1, by simp⟩
 }
 
+/-- The size of a CArray is its logical size. -/
 def size : Nat := A.lsize.val
 
 def clear : CArray α := { A with
@@ -78,7 +82,6 @@ def set! (i : Nat) (v : α) : CArray α :=
     data := A.data.set! i v
     lsize := by rw [size_set!]; exact A.lsize }
 
--- Cayden question: what is the difference betwen { ... } and { A with ... }?
 -- `filler` fills the gaps if `i` is too large
 def setF (i : Nat) (v filler : α) : CArray α :=
   -- TODO: Do a match on the comparison?
@@ -97,11 +100,12 @@ def setF (i : Nat) (v filler : α) : CArray α :=
           ← Nat.add_sub_assoc hi, add_comm _ i, Nat.add_sub_cancel]
         exact Nat.le_succ _ ⟩ }
 
+@[simp] theorem size_empty : (empty : CArray α).size = 0 := rfl
 @[simp] theorem size_mkCArray (n : Nat) (v : α) : (mkCArray n v).size = n := by sorry
 @[simp] theorem size_singleton (v : α) : (singleton v).size = 1 := by sorry
 @[simp] theorem size_clear : A.clear.size = 0 := rfl
-@[simp] theorem size_set (i : Fin A.size) (v : α) : (set A i v).size = A.lsize := by sorry
-@[simp] theorem size_set! (i : Nat) (v : α) : (set! A i v).size = A.lsize := by sorry
+@[simp] theorem size_set (i : Fin A.size) (v : α) : (set A i v).size = A.size := by sorry
+@[simp] theorem size_set! (i : Nat) (v : α) : (set! A i v).size = A.size := by sorry
 @[simp] theorem size_push (v : α) : (push A v).size = A.size + 1 := sorry
 @[simp] theorem size_setF (i : Nat) (v default : α) :
     (A.setF i v default).size = max A.size (i + 1) := by sorry
@@ -178,7 +182,16 @@ theorem set_set (a : Array α) (i : Fin a.size) (v v' : α) :
 
 /-! # Misc -/
 
+-- CC TODO: Make these be `abbrev` instead of `def`?
 def back [Inhabited α] : α := A.data.back
+def setBack := { A with
+  data := A.data.setBack v
+  lsize := ⟨A.lsize.val, by simp⟩
+}
+
+@[simp]
+theorem size_setBack : (A.setBack v).size = A.size := by
+  simp [size, setBack]
 
 def append (A B : CArray α) : CArray α := {
   data := A.data ++ B.data

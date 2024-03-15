@@ -171,6 +171,10 @@ variable (f : ν₁ → PropForm ν₂) (φ₁ φ₂ : PropFun ν₁) (v : ν₁
   have ⟨φ, hφ⟩ := φ.exists_rep; cases hφ
   rfl
 
+@[simp] theorem substL_compl : substL φᶜ f = (substL φ f)ᶜ := by
+  have ⟨φ, hφ⟩ := φ.exists_rep; cases hφ
+  rfl
+
 @[simp] theorem satisfies_substL {φ : PropFun ν₁} {f} {τ : PropAssignment ν₂} :
     τ ⊨ φ.substL f ↔ τ.subst (⟦f ·⟧) ⊨ φ := by
   have ⟨φ, hφ⟩ := φ.exists_rep; cases hφ
