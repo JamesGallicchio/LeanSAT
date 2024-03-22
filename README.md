@@ -19,12 +19,20 @@ Add the following to your project's `lakefile`:
 require «lean-sat» from git
   "https://github.com/JamesGallicchio/LeanSAT" @ "main"
 ```
-Then `import LeanSAT` will import everything in the library.
+The main branch is currently on Lean `v4.6.0`,
+and Lean still has breaking changes every minor revision,
+so expect it to not compile on any other version of Lean.
+
+As this project relies on `mathlib`,
+we recommend running `lake exe cache get` after modifying your lakefile.
+This downloads a precompiled version of `mathlib`.
 
 ## Usage
 
+In your files, `import LeanSAT` will import everything in the library.
+
 Everything in the library is under the `LeanSAT` namespace,
-so we generally assume you have `open LeanSAT` at the top of your files.
+so we generally assume you also have `open LeanSAT` at the top of your files.
 
 Important types:
 - `PropFun`: **The mathematical model of a propositional formula**.
