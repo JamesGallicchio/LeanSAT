@@ -13,4 +13,4 @@ lean_lib Examples {
 }
 
 -- Note: `mathlib` and `std` are obtained transitively so that the versions all match up
-require leancolls from git "https://github.com/JamesGallicchio/LeanColls.git" @ "v4.7.0"
+require leancolls from git "https://github.com/JamesGallicchio/LeanColls.git" @ "main"

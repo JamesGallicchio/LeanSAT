@@ -253,8 +253,7 @@ def all [ToList C α] [Fold C α] [Fold.ToList C α]
   ⟨ Fold.foldM c (fun () x => f x) ()
   , by
     have ⟨L,hPerm,h⟩ :=
-      Fold.ToList.foldM_eq_foldM_toList (m := EncCNF _)
-        c (fun () x => (f x).1) ()
+      Fold.foldM_eq_foldM_toList (m := EncCNF ν) c
     simp_rw [← hPerm.mem_iff]; clear hPerm
     rw [h]; clear h
     induction L with
@@ -266,9 +265,10 @@ def all [ToList C α] [Fold C α] [Fold.ToList C α]
         simpa using this
       · aesop⟩
 
-def forAll [IndexType α] {P : α → PropPred ν} (f : (a : α) → VEncCNF ν Unit (P a))
+def forAll [IndexType α] [LawfulIndexType α] {P : α → PropPred ν} (f : (a : α) → VEncCNF ν Unit (P a))
   : VEncCNF ν Unit (fun τ => ∀ a, P a τ) :=
   all (IndexType.univ α) f
+  |>.mapProp (by simp)
 
 -- Cayden TODO: Unit could possibly made to be β instead? Generalize later.
 -- One would think that P could be of type {P : PropFun ν}. But Lean timed out synthesizing that
@@ -295,12 +295,24 @@ def ite (p : Prop) [Decidable p] {P : p → PropPred ν} {Q : ¬p → PropPred �
 
 open PropFun in
 section
-def andImplyOr (hyps : Array (Literal ν)) (conc : Array (Literal ν))
+
+variable
+  [Fold Ch (Literal ν)] [Fold Cc (Literal ν)]
+  [ToList Ch (Literal ν)] [ToList Cc (Literal ν)]
+  [Fold.ToList Ch (Literal ν)] [Fold.ToList Cc (Literal ν)]
+  [Membership (Literal ν) Ch] [Membership (Literal ν) Cc]
+  [Mem.ToList Ch (Literal ν)] [Mem.ToList Ch (Literal ν)]
+
+def andImplyOr
+    (hyps : Ch) (conc : Cc)
   : VEncCNF ν Unit (fun τ => (∀ h ∈ hyps, τ ⊨ ↑h) → (∃ c ∈ conc, τ ⊨ ↑c)) :=
-  addClause (hyps.map LitVar.negate ++ conc)
+  addClause (
+    (View.of hyps).map LitVar.negate ++ View.of conc
+    |> Insert.into (Array _))
   |> mapProp (by
     ext τ
     simp [Clause.satisfies_iff, PropPred.satisfies_def]
+    conv => lhs; rhs; ext; rw [Insert.mem_into_iff]
     constructor
     · aesop
     · intro h
@@ -320,10 +332,10 @@ def implyOr (hyp : Literal ν) (conc : Array (Literal ν))
 
 def orImplyOr (hyps : Array (Literal ν)) (conc : Array (Literal ν))
   : VEncCNF ν Unit (fun τ => (∃ h ∈ hyps, τ ⊨ ↑h) → (∃ c ∈ conc, τ ⊨ ↑c)) :=
-  for_all hyps (fun hyp => andImplyOr #[hyp] conc)
+  all hyps (fun hyp => andImplyOr #[hyp] conc)
   |> mapProp (by
-    ext τ
-    simp [-List.mapM,Clause.satisfies_iff]
+    funext τ
+    simp [-List.mapM,Clause.satisfies_iff, ← Mem.ToList.mem_iff_mem_toList]
   )
 
 def orImply (hyps : Array (Literal ν)) (conc : Literal ν)
@@ -333,10 +345,10 @@ def orImply (hyps : Array (Literal ν)) (conc : Literal ν)
 
 def andImplyAnd (hyps : Array (Literal ν)) (concs : Array (Literal ν))
   : VEncCNF ν Unit (fun τ => (∀ h ∈ hyps, τ ⊨ ↑h) → (∀ c ∈ concs, τ ⊨ ↑c)) :=
-  for_all concs (fun conc => andImplyOr hyps #[conc])
+  all concs (fun conc => andImplyOr hyps #[conc])
   |> mapProp (by
     ext τ
-    simp [Clause.satisfies_iff]
+    simp [Clause.satisfies_iff, ← Mem.ToList.mem_iff_mem_toList]
     aesop
   )
 
@@ -347,14 +359,14 @@ def implyAnd (hyp : Literal ν) (concs : Array (Literal ν))
 
 def orImplyAnd (hyps : Array (Literal ν)) (concs : Array (Literal ν))
   : VEncCNF ν Unit (fun τ => (∃ h ∈ hyps, τ ⊨ ↑h) → (∀ c ∈ concs, τ ⊨ ↑c)) :=
-  for_all hyps (fun hyp =>
-    for_all concs (fun conc =>
+  all hyps (fun hyp =>
+    all concs (fun conc =>
       andImplyOr #[hyp] #[conc]
     )
   )
   |> mapProp (by
     ext τ
-    simp [Clause.satisfies_iff]
+    simp [Clause.satisfies_iff, ← Mem.ToList.mem_iff_mem_toList]
     aesop
   )
 
