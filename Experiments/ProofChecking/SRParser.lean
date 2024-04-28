@@ -143,6 +143,18 @@ def parseFormulaM (s : String) (F : CNF) : Except String (CNF × Nat) := do
     else
       return (F, nvars)
 
+@[inline, always_inline, specialize]
+def parseClauses (nvars ncls : Nat) (F : CNF) : List String → Except String CNF
+  | [] =>
+    if SRParser.Formula.size F != ncls then
+      throw s!"Expected {ncls} clauses, but found {Formula.size F}"
+    else
+      ok F
+  | c :: cs =>
+    match parseClause nvars F c with
+    | (.err str, _) => throw str
+    | (_, F) => parseClauses nvars ncls F cs
+
 -- CC: Because `parseFormula` is only called at top level once, it is okay to
 --     have the return type be an `Except` monad. However, the functions called
 --     by this function are the non-monadic versions.
@@ -154,17 +166,7 @@ def parseFormula (s : String) (F : CNF) : Except String (CNF × Nat) :=
     match parseHeader pLine with
     | .error str => throw str
     | .ok (nvars, ncls) =>
-      let rec loop (F : CNF) : List String → Except String CNF
-        | [] =>
-          if SRParser.Formula.size F != ncls then
-            throw s!"Expected {ncls} clauses, but found {Formula.size F}"
-          else
-            ok F
-        | c :: cs =>
-          match parseClause nvars F c with
-          | (.err str, _) => throw str
-          | (_, F) => loop F cs    -- We should expect .done here, but .ok works too
-      match loop F clauseLines with
+      match parseClauses nvars ncls F clauseLines with
       | .ok F => ok (F, nvars)
       | .error str => throw str
 
@@ -187,106 +189,86 @@ structure ParsingState (CNF : Type _) where
   F : CNF
   line : SRAdditionLine
 
-@[inline]
-def processSRAtom (atom : Int) (st : ParsingState CNF) : ParsingState CNF :=
+@[inline, specialize]
+def processSRAtom (atom : Int) : ParsingState CNF → ParsingState CNF := fun ⟨mode, pivot, F, line⟩ =>
   if h_atom : atom = 0 then
-    match st.mode with
+    match mode with
     | .clause =>
       -- We don't have a witness, so we insert the pivot into the witness and continue, if the clause isn't empty
-      match st.pivot with
-      | none => { st with mode := .upHints }
-      | some pivot => { st with
-        line := { st.line with witnessLits := st.line.witnessLits.push pivot },
-        mode := .upHints }
-    | .witnessLits => { st with mode := .upHints }
-    | .witnessMappedReady => { st with mode := .upHints }
-    | .witnessMappedHalfway _ => { st with mode := .err "Only got half a substitution mapping when ending a witness" }
-    | .upHints => { st with mode := .lineDone }
-    | .ratHints index hints => { st with
-        mode := .lineDone,
-        line := { st.line with
-          ratHintIndexes := st.line.ratHintIndexes.push index,
-          ratHints := st.line.ratHints.push hints,
-          ratSizesEq := by simp; exact st.line.ratSizesEq }
-        }
-    | .lineDone => { st with mode := .err "Addition line continued after last ending 0" }
-    | .err str => { st with mode := .err str }
+      match pivot with
+      | none => ⟨.upHints, pivot, F, line⟩
+      | some pivot => ⟨.upHints, pivot, F, { line with witnessLits := line.witnessLits.push pivot }⟩
+    | .witnessLits => ⟨.upHints, pivot, F, line⟩
+    | .witnessMappedReady => ⟨.upHints, pivot, F, line⟩
+    | .witnessMappedHalfway _ => ⟨.err "Only got half a substitution mapping when ending a witness", pivot, F, line⟩
+    | .upHints => ⟨.lineDone, pivot, F, line⟩
+    | .ratHints index hints =>
+        ⟨.lineDone, pivot, F, { line with
+          ratHintIndexes := line.ratHintIndexes.push index,
+          ratHints := line.ratHints.push hints,
+          ratSizesEq := by simp; exact line.ratSizesEq }⟩
+    | .lineDone => ⟨.err "Addition line continued after last ending 0", pivot, F, line⟩
+    | .err str => ⟨.err str, pivot, F, line⟩
   else
-    match st.mode with
+    match mode with
     | .clause =>
-      match st.pivot with
-      | none => { st with mode := .err "No pivot provided for the clause" }
+      match pivot with
+      | none => ⟨.err "No pivot provided for the clause", pivot, F, line⟩
       | some pivot =>
         if atom = pivot.val then
           -- Seeing the pivot again means we're parsing a witness
-          { st with
-            mode := .witnessLits,
-            line := { st.line with witnessLits := st.line.witnessLits.push pivot }
-          }
+          ⟨.witnessLits, pivot, F, { line with witnessLits := line.witnessLits.push pivot }⟩
         else
           -- It's not the pivot (and it's not 0), so add it to the clause
-          { st with
-            F := Formula.addLiteral st.F ⟨atom, h_atom⟩,
-            mode := .clause
-          }
+          ⟨.clause, pivot, Formula.addLiteral F ⟨atom, h_atom⟩, line⟩
     | .witnessLits =>
-      match st.pivot with
-      | none => { st with mode := .err "No pivot provided for the witness" }
+      match pivot with
+      | none => ⟨.err "No pivot provided for the witness", pivot, F, line⟩
       | some pivot =>
         if atom = pivot.val then
           -- Seeing the pivot again means we're parsing the substitution mappings
-          { st with mode := .witnessMappedReady }
+          ⟨.witnessMappedReady, pivot, F, line⟩
         else
-          { st with
-            line := { st.line with witnessLits := st.line.witnessLits.push ⟨atom, h_atom⟩ },
-            mode := .witnessLits
-          }
+          ⟨.witnessLits, pivot, F, { line with witnessLits := line.witnessLits.push ⟨atom, h_atom⟩ }⟩
     | .witnessMappedReady =>
-      match st.pivot with
-      | none => { st with mode := .err "No pivot provided for the witness" }
+      match pivot with
+      | none => ⟨.err "No pivot provided for the witness", pivot, F, line⟩
       | some pivot =>
         if atom = pivot.val then
-          { st with mode := .err "Saw pivot again in substitution mapping" }
+          ⟨.err "Saw pivot again in substitution mapping", pivot, F, line⟩
         else
           if atom < 0 then
-            { st with mode := .err "First of a substitution mapping must be positive" }
+            ⟨.err "First of a substitution mapping must be positive", pivot, F, line⟩
           else
-            { st with mode := .witnessMappedHalfway ⟨atom.natAbs, Int.natAbs_pos.mpr h_atom⟩ }
+            ⟨.witnessMappedHalfway ⟨atom.natAbs, Int.natAbs_pos.mpr h_atom⟩, pivot, F, line⟩
     | .witnessMappedHalfway v =>
-      { st with
-        mode := .witnessMappedReady,
-        line := { st.line with
-          witnessMaps := st.line.witnessMaps.push v |>.push ⟨atom, h_atom⟩,
-          witnessMapsMod := by simp [add_assoc, Nat.add_mod_right]; exact st.line.witnessMapsMod }
-       }
+      ⟨.witnessMappedReady, pivot, F,
+        { line with
+          witnessMaps := line.witnessMaps.push v |>.push ⟨atom, h_atom⟩,
+          witnessMapsMod := by simp [add_assoc, Nat.add_mod_right]; exact line.witnessMapsMod }⟩
     | .upHints =>
       if atom < 0 then
-        match st.pivot with
-        | none => { st with mode := .err "Can't have RAT hints for empty clauses" }
+        match pivot with
+        | none => ⟨.err "Can't have RAT hints for empty clauses", pivot, F, line⟩
         | _ =>
           -- This is our first RAT hint - start building it
-          { st with mode := .ratHints (atom.natAbs - 1) #[] }
+          ⟨.ratHints (atom.natAbs - 1) #[], pivot, F, line⟩
       else
-        { st with
-          mode := .upHints
-          line := { st.line with upHints := st.line.upHints.push (atom.natAbs - 1) }
-        }
+        ⟨.upHints, pivot, F, { line with upHints := line.upHints.push (atom.natAbs - 1) }⟩
     | .ratHints index hints =>
       if atom < 0 then
         -- This is a new RAT hint - add the old one
-        { st with
-          mode := .ratHints (atom.natAbs - 1) #[],
-          line := { st.line with
-            ratHintIndexes := st.line.ratHintIndexes.push index,
-            ratHints := st.line.ratHints.push hints,
-            ratSizesEq := by simp; exact st.line.ratSizesEq }
-        }
+        ⟨.ratHints (atom.natAbs - 1) #[], pivot, F,
+          { line with
+            ratHintIndexes := line.ratHintIndexes.push index,
+            ratHints := line.ratHints.push hints,
+            ratSizesEq := by simp; exact line.ratSizesEq }⟩
       else
-        { st with mode := .ratHints index (hints.push (atom.natAbs - 1)) }
+        ⟨.ratHints index (hints.push (atom.natAbs - 1)), pivot, F, line⟩
     | .lineDone =>
-      { st with mode := .err "Addition line continued after last ending 0" }
+      ⟨.err "Addition line continued after last ending 0", pivot, F, line⟩
     | .err str =>
-      { st with mode := .err str }
+      ⟨.err str, pivot, F, line⟩
 
 def parseSRAtom (st : ParsingState CNF) (s : String) : ParsingState CNF :=
   -- No matter what, the string should be a number, so parse it as an int
@@ -332,15 +314,15 @@ def parseLSRLine (F : CNF) (s : String) : Except String (Nat × CNF × (SRAdditi
           let rec loop (st : ParsingState CNF) : List String → ParsingState CNF
             | [] => st
             | atom :: atoms =>
-              let st := parseSRAtom st atom
-              match st.mode with
-              | .err _ => st
-              | _ => loop st atoms
+              let ⟨mode, pivot, F, line⟩ := parseSRAtom st atom
+              match mode with
+              | .err _ => ⟨mode, pivot, F, line⟩
+              | _ => loop ⟨mode, pivot, F, line⟩ atoms
 
-          let st := loop st tls
-          match st.mode with
+          let ⟨mode, _, F, line⟩ := loop st tls
+          match mode with
           | .err str => throw str
-          | .lineDone => return ⟨id, st.F, .inl st.line⟩
+          | .lineDone => return ⟨id, F, .inl line⟩
           | _ => throw "Addition line didn't end with 0"
 
 --------------------------------------------------------------------------------
