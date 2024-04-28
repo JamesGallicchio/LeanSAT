@@ -376,6 +376,10 @@ theorem le_iff_inf_compl_le_bot : a ≤ b ↔ a ⊓ bᶜ ≤ ⊥ := by
   rw [this]
   exact inf_le_iff_le_compl_sup.symm
 
+theorem le_compl_iff_inf_le_bot : a ≤ bᶜ ↔ a ⊓ b ≤ ⊥ := by
+  conv => rhs; lhs; rhs; rw [← compl_compl b]
+  exact le_iff_inf_compl_le_bot
+
 theorem le_iff_inf_compl_eq_bot : a ≤ b ↔ a ⊓ bᶜ = ⊥ := by
   rw [← le_bot_iff]; exact le_iff_inf_compl_le_bot
 

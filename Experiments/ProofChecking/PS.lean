@@ -14,490 +14,416 @@ Carnegie Mellon University
 
 import LeanSAT.Data.Cnf
 import LeanSAT.Data.ICnf
---import LeanSAT.AuxDefs
+import Mathlib.Data.Nat.Basic
+
+import LeanSAT.Model.Subst
+import LeanSAT.Model.PropFun
+
 import LeanSAT.Upstream.ToStd
 import LeanSAT.Upstream.ToMathlib
-import Mathlib.Data.Nat.Basic
-import LeanSAT.Model.Quantification
-import LeanSAT.Model.PropFun
-import LeanSAT.Data.PPA
+
+import Experiments.ProofChecking.PPA
 
 open LeanSAT LeanSAT.Model Nat
 open LitVar ILit IVar LawfulLitVar
 open PropFun
-
-/- The value contained in the partial substitution. Values can either be booleans
-   (in LRAT/LPR, they are only booleans), or set to other variables, with sign.
-
-  When set to other variables, the boolean indicates the sign (true is positive),
-  and the ILit refers to the underlying literal this variable is set to.     -/
-inductive PSVal where
-  | tr : PSVal
-  | fls : PSVal
-  | lit (l : ILit) : PSVal
-
-attribute [match_pattern] PSVal
-
-/- A PSCell is the actual array cell in the substitution. The generation
-   checks whether the cell is set (allowing for efficient clearing), and the val
-   field stores the information of what the variable is set to (boolean or other literal). -/
-structure PSCell where
-  generation : Nat   /- The generation value for the cell. Compare against PS.generation -/
-  val : PSVal
 
 /-- A persistent partial assignment of truth values to propositional variables.
 
 If used linearly, it is an efficient way of clearing out partial assignments
 when doing proof checking, tautology checking, or unit propagation. -/
 structure PS where
-  assignment : Array PSCell
+  gens : Array Nat
+  mappings : Array Nat
   /-- The generation counter is used to avoid clearing the assignment array.
   Instead, we just bump the counter and interpret values in the array
   below the counter as unassigned. -/
   generation : PNat
   /-- The maximum absolute value of any entry in `assignments`. -/
   maxGen : Nat
-  le_maxGen : ∀ i ∈ assignment.data, i.generation ≤ maxGen
+  sizes_eq : gens.size = mappings.size
+  le_maxGen : ∀ i ∈ gens.data, i ≤ maxGen
 
-/-! ## Reading values from the PS -/
-
-abbrev PSubst := (IVar → PropForm IVar)
-
-namespace PSVal
-
-@[simp, inline] def mkPosLit (idx : Nat) : PSVal := .lit (mkPos ⟨idx + 1, succ_pos _⟩)
-@[simp, inline] def mkNegLit (idx : Nat) : PSVal := .lit (mkNeg ⟨idx + 1, succ_pos _⟩)
-@[simp, inline] def mkFalse : PSVal := .fls
-
-protected def negate : PSVal → PSVal
-  | .tr => .fls
-  | .fls => .tr
-  | .lit l => .lit (LitVar.negate l)
-
-@[simp] theorem negate_negate : PSVal.negate ∘ PSVal.negate = id := by
-  ext r; cases r <;> simp [PSVal.negate]
-
-@[simp] theorem negate_negate' (r : PSVal) :
-    r.negate.negate = r := by
-  cases r <;> simp [PSVal.negate]
-
-theorem negate_rhs_eq_lhs_negate (r₁ r₂ : PSVal) :
-    r₁.negate = r₂ ↔ r₁ = r₂.negate := by
-  cases r₁ <;> cases r₂ <;> simp [PSVal.negate]; aesop
-
-@[simp] def isBool : PSVal →  Bool
-  | .tr => true
-  | .fls => true
-  | _ => false
-
-@[simp] def isLit : PSVal → Bool
-  | .lit _ => true
-  | _ => false
-
-@[simp] def getVar : PSVal → IVar
-  | .tr => 1  -- Useless return value for non-.lit values
-  | .fls => 1
-  | .lit l => toVar l
-
-@[simp] def getLit : PSVal → ILit
-  | .tr => mkPos ⟨1, succ_pos _⟩
-  | .fls => mkNeg ⟨1, succ_pos _⟩
-  | .lit l => l
-
-@[simp] def sign : PSVal → Bool
-  | .tr => true
-  | .fls => false
-  | .lit l => polarity l
-
-instance : ToString PSVal where
-  toString v :=
-    match v with
-    | .tr => "t"
-    | .fls => "f"
-    | .lit l => s!"{l}"
-
-end PSVal
-
-namespace PSCell
-
-/-
-def mkCell (idx : Nat) (gen : Nat := 0) : PSCell := {
-  generation := gen
-  val := PSVal.mkVal idx
-} -/
-
-def mkEmptyCell : PSCell := {
-  generation := 0
-  val := PSVal.mkFalse
-}
-
--- Checks whether the cell is set against a provided generation value
-@[simp, inline] def isSet (c : PSCell) (gen : Nat) : Bool := (c.generation ≥ gen)
-@[simp, inline] def isBool (c : PSCell) : Bool := c.val.isBool
-@[simp, inline] def isLit (c : PSCell) : Bool := c.val.isLit
-@[simp, inline] def getVar (c : PSCell) : IVar := c.val.getVar
-@[simp, inline] def getLit (c : PSCell) : ILit := c.val.getLit
-@[simp, inline] def sign (c : PSCell) : Bool := c.val.sign
-@[simp, inline] def isPointer (c : PSCell) (gen : Nat) : Bool := c.isSet gen && c.isLit
-
-def varValue? (c : PSCell) (gen : Nat) : Option PSVal :=
-  if c.isSet gen then
-    some c.val
-  else
-    none
-
-@[simp, inline] def clear (c : PSCell) : PSCell := { c with generation := 0 }
-
-@[inline] def setToTrue (c : PSCell) (gen : Nat) : PSCell := { c with
-  generation := gen
-  val := PSVal.tr
-}
-
-@[inline] def setToFalse (c : PSCell) (gen : Nat) : PSCell := { c with
-  generation := gen
-  val := PSVal.fls
-}
-
-@[inline] def setToLit (c : PSCell) (l : ILit) (gen : Nat) : PSCell := { c with
-  generation := gen
-  val := PSVal.lit l
-}
-
-@[inline] def setLit (c : PSCell) (l : ILit) (gen : Nat) : PSCell :=
-  if polarity l then
-    c.setToTrue gen
-  else
-    c.setToFalse gen
-
-section /- generation -/
-
-variable (c : PSCell) (l : ILit) (gen : Nat)
-
-@[simp] theorem mkEmptyCell_generation : mkEmptyCell.generation = 0 := rfl
-@[simp] theorem setToTrue_generation : (c.setToTrue gen).generation = gen := rfl
-@[simp] theorem setToFalse_generation : (c.setToFalse gen).generation = gen := rfl
-@[simp] theorem setToLit_generation : (c.setToLit l gen).generation = gen := rfl
-@[simp] theorem setLit_generation : (c.setLit l gen).generation = gen := by
-  cases hpol : polarity l <;> simp [setLit, hpol]
-
-end /- generation -/
-
-instance : ToString PSCell where
-  toString c := s!"({c.generation}, {c.val})"
-
-end PSCell
-
-/-! # PS -/
+@[reducible] abbrev PSubst := (IVar → PropForm IVar)
 
 namespace PS
 
-@[inline] def size (τ : PS) : Nat := τ.assignment.size
+@[reducible] def size (σ : PS) : Nat := σ.gens.size
 
-section /- Operations on Fin -/
+abbrev PSV := ILit ⊕ Bool
 
-variable (τ : PS) (i : Fin τ.size)
+namespace PSV
 
--- TODO: Or should these be abbrev?
-@[simp, inline] def get : PSCell := τ.assignment.get i
-@[simp, inline] def get? (i : Nat) : Option PSCell := τ.assignment.get? i
+def toPropForm : PSV → PropForm IVar
+  | Sum.inl l => LitVar.toPropForm l
+  | Sum.inr true => .tr
+  | Sum.inr false => .fls
 
-@[simp, inline] def isSet : Bool := (τ.get i).isSet τ.generation
-@[simp, inline] def isLit : Bool := (τ.get i).isLit
-@[simp, inline] def getVar : IVar := (τ.get i).getVar
-@[simp, inline] def getLit : ILit := (τ.get i).getLit
-@[simp, inline] def sign : Bool := (τ.get i).sign
-@[simp, inline] def isPointer : Bool := (τ.get i).isPointer τ.generation
+def toPropFun : PSV → PropFun IVar
+  | Sum.inl l => LitVar.toPropFun l
+  | Sum.inr true => ⊤
+  | Sum.inr false => ⊥
 
-end /- section -/
+def negate : PSV → PSV
+  | Sum.inl l => Sum.inl (LitVar.negate l)
+  | Sum.inr b => Sum.inr !b
 
-section /- Operations on Nat -/
+instance : Coe IVar PSV := ⟨Sum.inl ∘ mkPos⟩
+instance : Coe ILit PSV := ⟨Sum.inl⟩
+instance : Coe Bool PSV := ⟨Sum.inr⟩
 
-variable (τ : PS) (i : Nat)
+instance : Coe PSV (PropForm IVar) := ⟨toPropForm⟩
+instance : Coe PSV (PropFun IVar) := ⟨toPropFun⟩
 
--- TODO: Most elegant way to do Nats first? Monadic bind/map?
-@[simp, inline] def isSet? : Option Bool := (PSCell.isSet · τ.generation) <$> (τ.get? i)
-@[simp, inline] def isLit? : Option Bool := PSCell.isLit <$> (τ.get? i)
-@[simp, inline] def isPointer? : Option Bool := (PSCell.isPointer · τ.generation) <$> (τ.get? i)
-@[simp, inline] def getVar? : Option IVar := PSCell.getVar <$> (τ.get? i)
-@[simp, inline] def getLit? : Option ILit := PSCell.getLit <$> (τ.get? i)
-@[simp, inline] def sign? : Option Bool := PSCell.sign <$> (τ.get? i)
+-- CC: Was originally (Int.natAbs l.val) * 2, but made proofs hard
+--     See if this is slower?
+def toMapped' (l : ILit) : Nat :=
+  if polarity l then
+    (Int.natAbs l.val) * 2
+  else
+    (Int.natAbs l.val) * 2 + 1
 
-end /- section -/
+def toMapped : PSV → Nat
+  | Sum.inl l => toMapped' l
+  | Sum.inr true => 0
+  | Sum.inr false => 1
+
+def fromMapped (n : Nat) : PSV :=
+  match n with
+  | 0 => Sum.inr true
+  | 1 => Sum.inr false
+  | n + 2 =>
+    if n % 2 = 0 then
+      Sum.inl <| mkPos ⟨n / 2 + 1, Nat.succ_pos _⟩
+    else
+      Sum.inl <| mkNeg ⟨n / 2 + 1, Nat.succ_pos _⟩
+
+#check Int.natAbs_ofNat
+#check Int.cast_div
+#check Int.cast_div_charZero
+
+theorem exists_double {n : Nat} : n % 2 = 0 → ∃ m, n = 2 * m := by
+  intro h
+  sorry
+  done
+  --rw [Nat.mod_eq_of_lt (Nat.succ_pos _)] at h
+  --rw [Nat.div_eq_of_lt (Nat.succ_pos _)] at h
+  --exact ⟨n / 2, h⟩
+
+@[simp]
+theorem toMapped_fromMapped_id (n : Nat) : toMapped (fromMapped n) = n := by
+  match n with
+  | 0 => rfl
+  | 1 => rfl
+  | n + 2 =>
+    by_cases hn : n % 2 = 0
+    · rcases exists_double hn with ⟨m, rfl⟩
+      simp [fromMapped, toMapped, toMapped', hn]
+      simp [mkPos]
+      stop
+      rw [← Int.cast_one] --, ← Int.cast_add m 1]
+      simp
+      --have : (n : ℤ) / 2 + 1 = ↑(n / (2 : Nat) + (1 : Nat)) := rfl
+      --rw [this, Int.natAbs_ofNat, add_mul]
+      --simp
+
+      --rw [mul_div_right, mul_comm]
+      --trivial
+      done
+    · stop
+    done
+
+@[simp]
+theorem fromMapped_toMapped_id (val : PSV) : fromMapped (toMapped val) = val := by
+  match val with
+  | Sum.inr true => rfl
+  | Sum.inr false => rfl
+  | Sum.inl l =>
+    simp [fromMapped, toMapped, toMapped']
+    by_cases hpol : polarity l
+    <;> simp [hpol]
+    stop
+    done
+
+-- CC: Proof of id, or inverses
+
+instance : Coe PSV Nat := ⟨toMapped⟩
+instance : Coe Nat PSV := ⟨fromMapped⟩
+
+theorem negate_ILit (l : ILit) : Sum.inl (-l) = negate (Sum.inl l) := rfl
+
+theorem negate_eq_iff_eq_negate {val₁ val₂ : PSV} :
+    negate val₁ = val₂ ↔ val₁ = negate val₂ := by
+  cases val₁; cases val₂ <;> simp [negate]
+  · exact neg_eq_iff_eq_neg
+  · simp [negate]; aesop
+
+@[simp]
+theorem negate_negate {val : PSV} :
+    negate (negate val) = val := by
+  cases val <;> simp [negate]
+
+@[simp]
+theorem toPropFun_negate {val : PSV} :
+    toPropFun (negate val) = (toPropFun val)ᶜ := by
+  cases val <;> simp [toPropFun, negate]
+  rename Bool => b
+  cases b <;> simp
+
+/-
+@[simp]
+theorem toPropForm_negate {val : PSV} :
+    toPropForm (negate val) = PropForm.neg (toPropForm val) := by
+  cases val <;> simp [toPropForm, negate]
+  · rename _ => l
+    simp [LitVar.toPropForm]
+    by_cases hpol : polarity l
+    · simp [hpol]
+      done
+    · simp at hpol
+      rw [hpol]
+      conv => lhs; simp
+      conv => rhs; simp [PropForm.neg]
+      simp only [↓reduceIte]
+      --simp at hpol ⊢
+      --simp [LitVar.toPropForm, hpol]
+      done
+    rw [LitVar.toPropForm]
+    done
+  · rename Bool => b
+    cases b <;> simp -/
+
+end PSV
+
+open PSV
 
 instance : ToString PS where
-  toString τ := String.intercalate " ∧ "
-    (τ.assignment.foldl (init := []) (f := fun acc a => s!"{a}" :: acc))
-
-end PS
-
-/-! # WF: well-formed -/
-
-/-
-structure PSVal.WF (v : PSVal) (size : PNat) where
-  h_index : v.getLit.index < size
-
-structure PSCell.WF (c : PSCell) (size maxGen : PNat) where
-  h_val : PSVal.WF c.val size
-  h_gen : c.generation ≤ maxGen
-
-structure PS.WF (τ : PS) where
-  h_gen : τ.generation > 0
-  h_cells : ∀ (i : Fin τ.size), PSCell.WF (τ.get i)
-    ⟨τ.size, by match h : τ.size with
-                | 0     => rw [h] at i; exact Fin.elim0' i
-                | n + 1 => exact Nat.succ_pos _⟩ ⟨_, h_gen⟩ -/
-
-namespace PS
+  toString σ := String.intercalate ", "
+    (Fin.foldl σ.gens.size (fun str idx =>
+      if σ.gens.get! idx ≥ σ.generation then
+        str ++ [s!"({idx}: {σ.gens.get! idx}, {σ.mappings.get! idx})"]
+      else
+        str) [])
 
 /-! # varValue -/
 
--- Cayden: @[simp] attribute here?
-def varValue (τ : PS) (v : IVar) : PSVal :=
-  if hi : v.index < τ.size then
-    match PSCell.varValue? (get τ ⟨v.index, hi⟩) τ.generation with
-    | none => PSVal.lit (mkPos v)
-    | some x => x
-  else
-    PSVal.lit (mkPos v)
+-- CC: This is used for the model of the substitution, but for performing
+--     reduction, it should be faster to case on the value of the array
+--     directly (or think about inlining)
+@[inline, always_inline]
+def varValue (σ : PS) (v : IVar) : PSV :=
+  match σ.gens.get? v.index with
+  | none => Sum.inl (mkPos v)
+  | some gen =>
+    if gen ≥ σ.generation then
+      match σ.mappings.get? v.index with
+      | none => Sum.inl (mkPos v) -- Technically, dead branch
+      | some n => n
+    else
+      Sum.inl (mkPos v)
 
-@[inline] def litValue (τ : PS) (l : ILit) : PSVal :=
+@[inline, always_inline]
+def litValue (σ : PS) (l : ILit) : ILit ⊕ Bool :=
   if polarity l then
-    varValue τ (toVar l)
+    varValue σ (toVar l)
   else
-    PSVal.negate (varValue τ (toVar l))
+    negate (varValue σ (toVar l))
 
-def toSubst_fun (τ : PS) : PSubst → Fin τ.size → PSCell → PSubst :=
-  fun σ idx cell => (fun v =>
-    if v.index = idx.val then
-      match PSCell.varValue? cell v with
-      | none => σ v
-      | some .tr => PropForm.tr
-      | some .fls => PropForm.fls
-      | some (.lit l) => if polarity l then .var (toVar l)
-                         else .neg (.var (toVar l))
-    else σ v)
+def idxToSubst (σ : PS) (S : PSubst) (i : Fin σ.size) : PSubst :=
+  fun v =>
+    if v.index = i.val then toPropForm (σ.varValue v)
+    else S v
 
-def toSubst (τ : PS) : PSubst :=
-  τ.assignment.foldlIdx (init := .var) (toSubst_fun τ)
+def toSubst (σ : PS) : PSubst :=
+  Fin.foldl σ.size (init := .var) (idxToSubst σ)
 
-theorem toSubst_fun_comm (τ : PS) :
-  ∀ (σ : PSubst) (idx₁ idx₂ : Fin τ.size),
-    (toSubst_fun τ) ((toSubst_fun τ) σ idx₁ (τ.get idx₁)) idx₂ (τ.get idx₂) =
-    (toSubst_fun τ) ((toSubst_fun τ) σ idx₂ (τ.get idx₂)) idx₁ (τ.get idx₁) := by
-  intro σ idx₁ idx₂
-  unfold toSubst_fun
+instance : Coe PS PSubst := ⟨toSubst⟩
+
+theorem idxToSubst_comm (σ : PS) :
+  ∀ (S : PSubst) (idx₁ idx₂ : Fin σ.size),
+    (idxToSubst σ) ((idxToSubst σ) S idx₁) idx₂ =
+    (idxToSubst σ) ((idxToSubst σ) S idx₂) idx₁ := by
+  intro S idx₁ idx₂
+  unfold idxToSubst
   apply funext
   intro v
   by_cases hidx : idx₁.val = idx₂.val
   <;> by_cases hv₁ : v.index = idx₁.val
   <;> by_cases hv₂ : v.index = idx₂.val
   <;> try simp [hv₁, hv₂, hidx]
-  <;> try simp [hv₁, hv₂, hidx, Ne.symm hidx]
 
-theorem toSubst_of_comm (τ : PS) {v : IVar} (hv : v.index < τ.size) :
-    ∃ σ, τ.toSubst = (toSubst_fun τ) σ ⟨v.index, hv⟩ (τ.get ⟨v.index, hv⟩) :=
-  Array.foldlIdx_of_comm τ.assignment (toSubst_fun τ) .var (toSubst_fun_comm τ) ⟨v.index, hv⟩
+theorem toSubst_of_comm (σ : PS) {v : IVar} (hv : v.index < σ.size) :
+    ∃ S, σ.toSubst = idxToSubst σ S ⟨v.index, hv⟩ :=
+  Fin.foldl_of_comm σ.size (idxToSubst σ) .var ⟨v.index, hv⟩ (idxToSubst_comm σ)
 
-instance : ToString PS where
-  toString τ := String.intercalate " ∧ "
-    (τ.assignment.foldl (init := []) (f := fun acc a =>
-      match a.val with
-        | .tr => s!"{a.generation}" :: acc
-        | .fls => s!"-{a.generation}" :: acc
-        | .lit l => s!"<{l}>" :: acc))
+theorem toSubst_eq_of_ge {σ : PS} {v : IVar} :
+    v.index ≥ σ.size → σ.toSubst v = v := by
+  have : ∃ n, n = σ.gens.size := by
+    use σ.gens.size
+  rcases this with ⟨n, hn⟩
+  induction n with
+  | zero =>
+    simp [toSubst, ← hn, Fin.foldl]
+    rw [Fin.foldl.loop]
+    simp [← hn]
+  | succ n ih =>
+    stop
+    done
 
-theorem litValue_negate (τ : PS) (l : ILit) :
-    (τ.litValue (-l)) = PSVal.negate (τ.litValue l) := by
+@[simp]
+theorem litValue_negate (σ : PS) (l : ILit) :
+    (σ.litValue (-l)) = negate (σ.litValue l) := by
   cases hpol : polarity l <;> simp [hpol, litValue]
 
-theorem litValue_eq_varValue_pos {l : ILit} :
-    polarity l = true → ∀ (τ : PS), τ.litValue l = τ.varValue (toVar l) := by
+variable {σ : PS} {v : IVar} {l : ILit}
+
+theorem negate_varValue_eq_iff {val : PSV} :
+    negate (σ.varValue v) = val ↔ σ.varValue v = negate val :=
+  negate_eq_iff_eq_negate
+
+theorem litValue_eq_varValue_true {l : ILit} :
+    polarity l = true → ∀ (σ : PS), σ.litValue l = σ.varValue (toVar l) := by
   intro hl; simp [hl, litValue]
 
-theorem litValue_eq_varValue_neg {l : ILit} :
-    polarity l = false → ∀ (τ : PS), τ.litValue l = PSVal.negate (τ.varValue (toVar l)) := by
+theorem litValue_eq_varValue_false {l : ILit} :
+    polarity l = false → ∀ (σ : PS), σ.litValue l = negate (σ.varValue (toVar l)) := by
   intro hl; simp [hl, litValue]
 
-theorem lt_size_of_varValue_of_not_id {τ : PS} {v : IVar} :
-    τ.varValue v ≠ .lit (mkPos v) → v.index < τ.size := by
+theorem lt_size_of_varValue_ne : σ.varValue v ≠ v → v.index < σ.size := by
   intro hv
-  by_contra
-  rename (¬v.index < τ.size) => h_con
-  simp [varValue, h_con] at hv
+  simp [varValue, Array.get?] at hv
+  rcases Nat.lt_trichotomy v.index σ.size with (hlt | heq | hgt)
+  · exact hlt
+  · simp [heq] at hv
+  · simp [Nat.lt_asymm hgt] at hv
 
-theorem lt_size_of_litValue_of_not_id {τ : PS} {l : ILit} :
-    τ.litValue l ≠ .lit l → l.index < τ.size := by
+theorem lt_size_of_varValue_true : σ.varValue v = true → v.index < σ.size := by
+  intro hσ
+  apply lt_size_of_varValue_ne
+  simp [hσ]
+
+theorem lt_size_of_varValue_false : σ.varValue v = false → v.index < σ.size := by
+  intro hσ
+  apply lt_size_of_varValue_ne
+  simp [hσ]
+
+theorem varValue_eq_of_ge : v.index ≥ σ.size → σ.varValue v = v := by
   intro hv
-  by_contra
-  rename (¬l.index < τ.size) => h_con
-  rcases mkPos_or_mkNeg l with (hl | hl)
-  -- Cayden TODO: put this in one simp [] call. Why explicit typeclass LawfulLitVar lemmas?
-  · simp [litValue, varValue, h_con] at hv
-    rw [hl] at hv
-    simp_rw [LawfulLitVar.polarity_mkPos, LawfulLitVar.toVar_mkPos] at hv
-    simp at hv
-  · simp [litValue, varValue, h_con, PSVal.negate] at hv
-    rw [hl] at hv
-    simp_rw [LawfulLitVar.polarity_mkNeg, LawfulLitVar.toVar_mkNeg] at hv
-    simp at hv
+  simp [size, varValue, getElem?, Nat.not_lt_of_ge hv]
 
-theorem varValue_fls_iff {σ : PS} {v : IVar} :
-    (σ.varValue v = .fls) ↔ (PropFun.bind σ.toSubst ⟦v⟧) = ⊥ := by
-  sorry
-  done
+theorem lt_size_of_litValue_true : σ.litValue l = true → l.index < σ.size := by
+  intro hσ
+  by_cases hpol : polarity l
+  <;> simp [hpol, litValue] at hσ
+  <;> try apply lt_size_of_varValue_true hσ
+  rw [negate_varValue_eq_iff] at hσ
+  exact lt_size_of_varValue_false hσ
 
-theorem varValue_tr_iff {σ : PS} {v : IVar} :
-    (σ.varValue v = .tr) ↔ (PropFun.bind σ.toSubst ⟦v⟧) = ⊤ := by
-  sorry
-  done
+theorem lt_size_of_litValue_false : σ.litValue l = false → l.index < σ.size := by
+  intro hσ
+  by_cases hpol : polarity l
+  <;> simp [hpol, litValue] at hσ
+  <;> try apply lt_size_of_varValue_false hσ
+  rw [negate_varValue_eq_iff] at hσ
+  exact lt_size_of_varValue_true hσ
 
-theorem varValue_lit_iff {σ : PS} {v : IVar} {l : ILit} :
-    (σ.varValue v = .lit l) ↔ (PropFun.bind σ.toSubst ⟦v⟧) = (PropFun.bind σ.toSubst l) := by
-  sorry
-  done
+theorem litValue_eq_of_ge : l.index ≥ σ.size → σ.litValue l = l := by
+  intro hl
+  by_cases hpol : polarity l
+  <;> simp [litValue, hpol, varValue_eq_of_ge hl, PSV.negate]
+  <;> ext
+  <;> simp [hpol]
 
-theorem litValue_fls_iff {σ : PS} {l : ILit} :
-    (σ.litValue l = .fls) ↔ (PropFun.bind σ.toSubst l) = ⊥ := by
-  sorry
-  done
+theorem varValue_eq_toSubst : σ.varValue v = σ.toSubst v := by
+  by_cases hv : v.index < σ.size
+  · have ⟨_, h_toSubst⟩ := (Fin.foldl_of_comm σ.size (idxToSubst σ) .var ⟨v.index, hv⟩ (idxToSubst_comm σ))
+    simp [toSubst, h_toSubst, idxToSubst]
+  · rw [not_lt] at hv
+    simp [varValue_eq_of_ge hv, toSubst_eq_of_ge hv, PSV.toPropForm]
 
-theorem litValue_tr_iff {σ : PS} {l : ILit} :
-    (σ.litValue l = .tr) ↔ (PropFun.bind σ.toSubst l) = ⊤ := by
-  sorry
-  done
+theorem varValue_eq_substL : σ.varValue v = PropFun.substL ⟦v⟧ σ.toSubst := by
+  by_cases hv : v.index < σ.size
+  · have ⟨S, h_toSubst⟩ := (Fin.foldl_of_comm σ.size (idxToSubst σ) .var ⟨v.index, hv⟩ (idxToSubst_comm σ))
+    simp [PropFun.ext_iff, satisfies_substL, PropAssignment.subst]
+    intro τ
+    rw [toSubst, h_toSubst, idxToSubst]
+    simp [hv]
+    cases hσ : σ.varValue v
+    <;> simp [PSV.toPropFun, PSV.toPropForm]
+    rename Bool => b
+    cases b <;> simp
+  · rw [not_lt] at hv
+    simp [varValue_eq_of_ge hv, PSV.toPropFun]
+    simp [PropFun.ext_iff, satisfies_substL, PropAssignment.subst]
+    intro τ
+    simp [toSubst_eq_of_ge hv]
+    done
 
-theorem litValue_lit_iff {σ : PS} {l₁ l₂ : ILit} :
-    (σ.litValue l₁ = .lit l₂) ↔ (PropFun.bind σ.toSubst l₁) = l₂ := by
-  sorry
-  done
+theorem litValue_eq_substL : σ.litValue l = PropFun.substL ⟦l⟧ σ.toSubst := by
+  by_cases hpol : polarity l
+  <;> simp [litValue, hpol, varValue_eq_substL, PSV.toPropForm, LitVar.toPropFun]
+
+theorem litValue_eq_substL' : σ.litValue l = PropFun.substL (LitVar.toPropFun l) σ.toSubst := by
+  by_cases hpol : polarity l
+  <;> simp [hpol, litValue, LitVar.toPropFun, varValue_eq_substL]
 
 /-! # setLit -/
 
--- Cayden TODO: How to make setF more efficient when the value needs to be a cell?
--- Can an efficient implementation do this linearly? Ow will run out of memory?
--- One idea is to use a .setF' that takes a function : (Option α → α) instead of value v : α
--- That way, if the cell exists, its value can be mapped
-
--- This is a more efficient version
-/-
-def setLit (τ : PS) (l : ILit) : PS := { τ with
-  assignment :=
-    if hidx : l.index < τ.size then
-      τ.assignment.set ⟨l.index, hidx⟩ ((τ.get ⟨l.index, hidx⟩).setLit l τ.generation)
-    else
-      τ.assignment.setF l.index (PSCell.mkEmptyCell.setLit l τ.generation) PSCell.mkEmptyCell
-  maxGen := max τ.maxGen τ.generation
-}
--/
-
-theorem setVar_le_maxGen (τ : PS) (i : Nat) (c : PSCell) :
-    ∀ cell ∈ (τ.assignment.setF i c PSCell.mkEmptyCell).data, cell.generation ≤ max τ.maxGen c.generation := by
+theorem setVar_le_maxGen (σ : PS) (i : Nat) (gen : Nat) :
+    ∀ cell ∈ (σ.gens.setF i gen 0).data, cell ≤ max σ.maxGen p := by
+  intro cell hcell
   sorry
   done
 
 -- This is a more functional version
 /-- Set the given literal to `true` for the current generation in the PS. -/
-def setLit (τ : PS) (l : ILit) : PS := { τ with
-  assignment := τ.assignment.setF l.index (PSCell.mkEmptyCell.setLit l τ.generation) PSCell.mkEmptyCell
-  maxGen := max τ.maxGen τ.generation
-  le_maxGen := by
-    have := setVar_le_maxGen τ l.index (PSCell.mkEmptyCell.setLit l τ.generation)
-    rwa [PSCell.setLit_generation PSCell.mkEmptyCell l ↑τ.generation] at this
+def setLit (σ : PS) (l : ILit) : PS :=
+  let val : PSV := if polarity l then true else false
+  { σ with
+    gens := σ.gens.setF l.index σ.generation 0,
+    mappings := σ.mappings.setF l.index val 0,
+    maxGen := max σ.maxGen σ.generation
+    sizes_eq := by simp [σ.sizes_eq]
+    le_maxGen := setVar_le_maxGen σ l.index σ.generation
+  }
+
+def setVarToLit (σ : PS) (v : IVar) (l : ILit) : PS := { σ with
+  gens := σ.gens.setF v.index σ.generation 0
+  mappings := σ.mappings.setF v.index (PSV.toMapped' l) 0
+  maxGen := max σ.maxGen σ.generation
+  sizes_eq := by simp [σ.sizes_eq]
+  le_maxGen := setVar_le_maxGen σ v.index σ.generation
 }
 
-/-- Set the given literal to `true` for all generations until `gen`. -/
-def setLitUntil (τ : PS) (l : ILit) (gen : Nat) : PS := { τ with
-  assignment := τ.assignment.setF l.index (PSCell.mkEmptyCell.setLit l gen) PSCell.mkEmptyCell
-  maxGen := max τ.maxGen gen
-  le_maxGen := by
-    have := setVar_le_maxGen τ l.index (PSCell.mkEmptyCell.setLit l gen)
-    rwa [PSCell.setLit_generation PSCell.mkEmptyCell l gen] at this
-}
-
-def setVarToLit (τ : PS) (v : IVar) (l : ILit) : PS := { τ with
-  assignment := τ.assignment.setF v.index (PSCell.mkEmptyCell.setLit l τ.generation) PSCell.mkEmptyCell
-  maxGen := max τ.maxGen τ.generation
-  le_maxGen := by
-    have := setVar_le_maxGen τ v.index (PSCell.mkEmptyCell.setLit l τ.generation)
-    rwa [PSCell.setLit_generation PSCell.mkEmptyCell l τ.generation] at this
-}
-
-def setVarToLitUntil (τ : PS) (v : IVar) (l : ILit) (gen : Nat) : PS := { τ with
-  assignment := τ.assignment.setF v.index (PSCell.mkEmptyCell.setLit l gen) PSCell.mkEmptyCell
-  maxGen := max τ.maxGen gen
-  le_maxGen := by
-    have := setVar_le_maxGen τ v.index (PSCell.mkEmptyCell.setLit l gen)
-    rwa [PSCell.setLit_generation PSCell.mkEmptyCell l gen] at this
-}
-
-@[simp, inline] def setLitToLit (τ : PS) (l l_target : ILit) : PS :=
-  if polarity l then
-    τ.setVarToLit (toVar l) l_target
-  else
-    τ.setVarToLit (toVar l) (-l_target)
-
-@[simp, inline] def setLitToLitUntil (τ : PS) (l l_target : ILit) (gen : Nat) : PS :=
-  if polarity l then
-    τ.setVarToLitUntil (toVar l) l_target gen
-  else
-    τ.setVarToLitUntil (toVar l) (-l_target) gen
-
-def setVars (σ : PS) (L : List (IVar × ILit)) : PS :=
-  L.foldl (init := σ) (fun σ ⟨v, l⟩ => σ.setVarToLit v l)
-
-def setVars' (σ : PS) (A : Array (IVar × ILit)) : PS :=
+def setVars (σ : PS) (A : Array (IVar × ILit)) : PS :=
   A.foldl (init := σ) (fun σ ⟨v, l⟩ => σ.setVarToLit v l)
 
-def setVarsUntil (σ : PS) (L : List (IVar × ILit)) (gen : Nat) : PS :=
-  L.foldl (init := σ) (fun σ ⟨v, l⟩ => σ.setVarToLitUntil v l gen)
+def setVars' (σ : PS) (A : Array ILit) : PS :=
+  let rec go (i : Nat) (σ : PS) : PS :=
+    if hi : i + 1 < A.size then
+      have : Array.size A - (i + 2) < Array.size A - i := Nat.sub_add_lt_sub hi (le.step le.refl)
+      go (i + 2) (σ.setVarToLit (toVar (A.get ⟨i, Nat.lt_of_succ_lt hi⟩)) (A.get ⟨i + 1, hi⟩))
+    else
+      σ
+  termination_by A.size - i
+  go 0 σ
 
-def setVarsUntil' (σ : PS) (A : Array (IVar × ILit)) (gen : Nat) : PS :=
-  A.foldl (init := σ) (fun σ ⟨v, l⟩ => σ.setVarToLitUntil v l gen)
-
-theorem setVars_eq_setVars' {L : List (IVar × ILit)} {A : Array (IVar × ILit)} :
-  L = A.data → ∀ (σ : PS), σ.setVars L = σ.setVars' A := by sorry
+def setLits (σ : PS) (A : Array ILit) : PS :=
+  A.foldl setLit σ
 
 /- Lemmas -/
 
-@[simp] theorem setLit_size (τ : PS) (l : ILit) : (τ.setLit l).size = max τ.size (l.index + 1) := by
+@[simp]
+theorem setLit_size (σ : PS) (l : ILit) : (σ.setLit l).size = max σ.size (l.index + 1) := by
   simp [setLit, size]
 
--- Cayden TODO: Figure out which things are @[simp] in def vs. @[simp] theorems.
-theorem litValue_setLit_pos (τ : PS) (l : ILit) : (τ.setLit l).litValue l = .tr := by
+@[simp]
+theorem litValue_setLit (σ : PS) (l : ILit) : (σ.setLit l).litValue l = true := by
   by_cases hpol : polarity l
-  <;> by_cases hl : l.index < τ.size
-  <;> simp [litValue, varValue, size, setLit, PSCell.setLit, PSCell.setToTrue, PSCell.setToFalse,
-        hpol, hl, PSCell.varValue?, PSVal.negate, Array.getElem_setF]
-
-theorem litValue_setLit_neg (τ : PS) {l₁ l₂ : ILit} :
-    l₁ ≠ l₂ → (τ.setLit l₁).litValue l₂ = τ.litValue l₂ := by
-  intro hne
-  by_cases hpol₁ : polarity l₁
-  · by_cases hpol₂ : polarity l₂
-    · simp [hpol₁, hpol₂, litValue]
-      sorry
-    sorry
-  /-by_cases hpol : polarity l₂
-  · simp [litValue, hpol, setLit, Array.size_setF, -Array.get_eq_getElem]
-    by_cases hl₂ : l₂.index < τ.size
-    · rw [size] at hl₂
-      have : l₂.index < τ.assignment.size ∨ l₂.index < l₁.index + 1 := Or.inl hl₂
-      simp [hl₂, this, -Array.get_eq_getElem]
-      by_cases hpol₁ : polarity l₁
-      · rw [Array.getElem_setF' τ.assignment l₁.index ⟨τ.generation, PSVal.tr⟩ PSCell.mkEmptyCell]
-
-      done
-    done
-  --by_cases hpol : polarity l₂
-  --<;> by_cases hl₂ : l₂.index < τ.size
-  --<;> simp [litValue, setLit, hpol,
-  --    hl₂, Or.inl hl₂, Array.size_setF, PSCell.varValue?, PSVal.negate] -/
-  sorry
-  done
+  <;> by_cases hl : l.index < σ.size
+  <;> simp [litValue, varValue, size, setLit, hpol, hl, PSV.negate, Array.getElem_setF]
 
 /-! # New -/
-
---ofFn (fun (idx : Fin maxVar) => PSCell.mkCell idx 0)
 
 /-- Initialize to an empty partial assignment,
 supporting variables in the range `[1, maxVar]`.
@@ -506,32 +432,24 @@ The assignment will resize dynamically if it's used with
 a variable above the initial `maxVar`. -/
 
 def new (n : Nat) : PS where
-  assignment := Array.mkArray n PSCell.mkEmptyCell
+  gens := Array.mkArray n 0
+  mappings := Array.mkArray n 0
   generation := ⟨1, Nat.one_pos⟩
   maxGen := 0
+  sizes_eq := by simp
   le_maxGen := by simp_all [List.mem_replicate]
-
-/-
-theorem new_WF (n : Nat) : (new n).WF := by
-  simp [new]
-  constructor
-  · intro i
-    sorry
-  · simp only [gt_iff_lt, zero_lt_one] -/
 
 /-! # Reset -/
 
 /-- Reset the assignment to an empty one. -/
-def reset (τ : PS) : PS :=
-  { τ with
-    generation := ⟨τ.maxGen + 1, Nat.succ_pos _⟩ }
+def reset (σ : PS) : PS :=
+  { σ with generation := ⟨σ.maxGen + 1, Nat.succ_pos _⟩ }
 
 /-! # Bump -/
 
 /-- Clear all temporary assignments at the current generation. -/
-def bump (τ : PS) : PS :=
-  { τ with generation := τ.generation + 1 }
-
+def bump (σ : PS) : PS :=
+  { σ with generation := σ.generation + 1 }
 
 section monadic
 
@@ -552,24 +470,25 @@ against a partial assignment happen in the same step (possibly using another "PP
 to record which literals have been seen in the reduction, so a tautology can be detected)
 
 -/
+/-
 
 inductive UPResult where
   | falsified
   | satisfied
-  | unit (l : ILit) (τ : PS) -- Updated substitution and unit literal l
+  | unit (l : ILit) (σ : PS) -- Updated substitution and unit literal l
   | multipleUnassignedLiterals
 
 inductive UPDone where
   | satisfied
   | multipleUnassignedLiterals
 
-abbrev UPBox := ResultT UPDone (Option ILit)
+abbrev UPBox := Except UPDone (Option ILit)
 
-open ResultT UPResult UPDone PPA
+open Except UPResult UPDone PPA
 
 def sevalUP (σ : PS) (unit? : Option ILit) (l : ILit) : UPBox :=
   match σ.litValue l with
-  | .tr => done .satisfied
+  | .tr => error .satisfied
   | .fls => ok unit?
   | .lit lit =>
     match unit? with
@@ -577,8 +496,8 @@ def sevalUP (σ : PS) (unit? : Option ILit) (l : ILit) : UPBox :=
     | some u =>
       if u = lit then ok unit?
       -- Since σ is a substitution, tautology could occur
-      else if u = -lit then done .satisfied
-      else done .multipleUnassignedLiterals
+      else if u = -lit then error .satisfied
+      else error .multipleUnassignedLiterals
 
 def foldUP (σ : PS) (C : IClause) := C.foldlM (sevalUP σ) none
 
@@ -586,8 +505,8 @@ def unitProp (σ : PS) (C : IClause) : UPResult :=
   match foldUP σ C with
   | ok none => .falsified
   | ok (some lit) => .unit lit (σ.setLit lit)
-  | done .satisfied => .satisfied
-  | done .multipleUnassignedLiterals => .multipleUnassignedLiterals
+  | error .satisfied => .satisfied
+  | error .multipleUnassignedLiterals => .multipleUnassignedLiterals
 
 def UP_motive_fn (σ : PS) (C : IClause) : ℕ → Option ILit → Prop
   | idx, none => ∀ ⦃i : Fin C.size⦄, i < idx → σ.litValue C[i] = .fls
@@ -604,7 +523,7 @@ theorem SatisfiesM_UP (σ : PS) (C : IClause) :
     (h0 := by simp [UP_motive_fn])
     (hf := by
       unfold UP_motive_fn
-      simp only [SatisfiesM_ResultT_eq, getElem_fin]
+      simp only [SatisfiesM_Except_eq, getElem_fin]
       -- Cayden question: is the proof more compact if I use pattern-matching with intro?
       intro i box ih
       intro
@@ -615,7 +534,7 @@ theorem SatisfiesM_UP (σ : PS) (C : IClause) :
         | .tr => simp_rw [hσ] at hbox
         | .fls =>
           simp_rw [hσ, ok.injEq] at hbox; subst hbox
-          rcases Order.lt_succ_iff_eq_or_lt.mp hj with (hj | hj)
+          rcases eq_or_lt_of_le (le_of_lt_succ hj) with (hj | hj)
           · rw [Fin.ext hj]; exact hσ
           · exact ih hj
         | .lit lit =>
@@ -626,7 +545,7 @@ theorem SatisfiesM_UP (σ : PS) (C : IClause) :
             rcases eq_trichotomy u lit with (rfl | rfl | hvar)
             · simp at hbox
             · simp at hbox
-            · simp [ne_of_var_ne hvar, ne_of_var_ne ((toVar_negate lit).symm ▸ hvar)] at hbox
+            · simp [ne_of_toVar_ne hvar, ne_of_toVar_ne ((toVar_negate lit).symm ▸ hvar)] at hbox
       | some u, hbox =>
         rename ILit => lit
         unfold sevalUP at hbox
@@ -661,48 +580,49 @@ theorem SatisfiesM_UP (σ : PS) (C : IClause) :
               · exact hidx_fls h
               · replace h := Fin.ext h; subst h; intro _; exact Or.inr hσ
             · simp at hbox
-            · simp [ne_of_var_ne hvar, ne_of_var_ne ((toVar_negate lit').symm ▸ hvar)] at hbox)
+            · simp [ne_of_toVar_ne hvar, ne_of_toVar_ne ((toVar_negate lit').symm ▸ hvar)] at hbox)
   apply SatisfiesM.imp this
   intro
   | none =>
     intro h l hl
-    rcases Array.mem_data_iff.mp hl with ⟨i, rfl⟩
+    rcases Array.mem_data_iff_exists_fin.mp hl with ⟨i, rfl⟩
     exact h i.isLt
   | some lit =>
     simp [UP_motive_fn]
     intro i hi ih
     use C[i.val], Array.getElem_mem_data C i.isLt, hi
     intro l hl₁ hl₂
-    rcases Array.mem_data_iff.mp hl₁ with ⟨j, rfl⟩
+    rcases Array.mem_data_iff_exists_fin.mp hl₁ with ⟨j, rfl⟩
     apply ih
     exact ne_of_apply_ne (C[·]) hl₂
 
 theorem contradiction_of_UP_falsified {σ : PS} {C : IClause} :
-    σ.unitProp C = .falsified → (C.toPropFun).bind σ.toSubst ≤ ⊥ := by
+    σ.unitProp C = .falsified → (C.toPropFun).substL σ.toSubst ≤ ⊥ := by
   unfold unitProp
   intro h_falsified
   split at h_falsified <;> try simp at h_falsified
   clear h_falsified
   rename (foldUP σ C = ok none) => h
   refine entails_ext.mpr fun τ hτ => ?_
-  rw [satisfies_bind] at hτ
+  rw [satisfies_substL] at hτ
   have ⟨lit, hlit, hτlit⟩ := Clause.satisfies_iff.mp hτ
-  have := SatisfiesM_ResultT_eq.mp (SatisfiesM_UP σ C) none h lit hlit
+  rw [← Array.mem_data] at hlit
+  have := SatisfiesM_Except_eq.mp (SatisfiesM_UP σ C) none h lit hlit
   clear h hτ
   replace hτlit := satisfies_iff.mp hτlit
   cases hpol : polarity lit
-  <;> simp [hpol, PropAssignment.preimage] at hτlit
+  <;> simp [hpol, PropAssignment.subst] at hτlit
   · rw [litValue_eq_varValue_neg hpol, PSVal.negate_rhs_eq_lhs_negate, PSVal.negate,
-          varValue_tr_iff, bind_distrib] at this
+          varValue_tr_iff, substL_distrib] at this
     rw [this] at hτlit
     contradiction
-  · rw [litValue_eq_varValue_pos hpol, varValue_fls_iff, bind_distrib] at this
+  · rw [litValue_eq_varValue_pos hpol, varValue_fls_iff, substL_distrib] at this
     rw [this] at hτlit
     exact hτlit
 
 theorem extended_of_UP_unit {σ σ' : PS} {C : IClause} {l : ILit} :
     σ.unitProp C = .unit l σ' →
-      (C.toPropFun).bind σ.toSubst ≤ l.toPropFun ∧
+      (C.toPropFun).substL σ.toSubst ≤ l.toPropFun ∧
       (∃ lit ∈ C.data, σ.litValue lit = .lit l ∧ σ'.litValue l = .tr) := by
       -- Cayden question: how to express this in an abstract way? Perhaps with a bind (l.bind σ) or as a (. ∘ .) of two subs
   unfold unitProp
@@ -712,16 +632,16 @@ theorem extended_of_UP_unit {σ σ' : PS} {C : IClause} {l : ILit} :
   rename ILit => lit
   rename (foldUP σ C = ok (some lit)) => h
   rcases h_unit with ⟨rfl, rfl⟩
-  have hlv := SatisfiesM_ResultT_eq.mp (SatisfiesM_UP σ C) (some lit) h
+  have hlv := SatisfiesM_Except_eq.mp (SatisfiesM_UP σ C) (some lit) h
   clear h
   rcases hlv with ⟨l, hl_mem, hσl, ih⟩
   constructor
   · refine entails_ext.mpr fun τ hτ => ?_
-    rw [satisfies_bind] at hτ
+    rw [satisfies_substL] at hτ
     by_cases heq : l = lit
     · subst heq
       rw [Clause.satisfies_iff] at hτ; rcases hτ with ⟨l', hl'_mem, hl'⟩
-      rw [← satisfies_bind] at hl'
+      rw [← satisfies_substL] at hl'
       sorry -- Proof got stuck here. And we may not need unit propagaion after all
       done
     · sorry
@@ -729,104 +649,223 @@ theorem extended_of_UP_unit {σ σ' : PS} {C : IClause} {l : ILit} :
     done
   · exact ⟨l, hl_mem, hσl, litValue_setLit_pos _ _⟩
   done
-
--- We have to carry along a PPA to store the unset literals and check for tautologies (Cayden later comment: why??)
+  -/
 
 /-! # Reduction -/
 
--- We do something very similar to "unit propagation", except we don't modify σ
-
 inductive ReductionResult where
-  | falsified
   | satisfied
   | reduced
   | notReduced
 
-abbrev RedBox := ResultT PPA (PPA × Bool × Bool)
-
-open ResultT ReductionResult
-
-def sevalRed (σ : PS) (p : PPA × Bool × Bool) (l : ILit) : RedBox :=
-  let ⟨τ, reduced?, unassigned?⟩ := p
-  match σ.litValue l with
-  | .tr => done τ
-  | .fls => ok ⟨τ, true, unassigned?⟩
-  | .lit lit =>
-    match τ.litValue? lit with
-    | none => ok ⟨τ.setLit lit, reduced? || (l != lit), true⟩
-    | some true => ok ⟨τ, reduced? || (l != lit), true⟩
-    | some false => done τ
-
-def foldRed (σ : PS) (τ : PPA) (C : IClause) := C.foldlM (sevalRed σ) ⟨τ.reset, false, false⟩
-
-def reduced? (σ : PS) (τ : PPA) (C : IClause) : ReductionResult × PPA :=
-  match foldRed σ τ C with
-  | ok ⟨τ, true, false⟩  => (.falsified, τ)
-  | ok ⟨τ, true, true⟩   => (.reduced, τ)
-  | ok ⟨τ, false, true⟩  => (.notReduced, τ)
-  | ok ⟨τ, false, false⟩ => (.notReduced, τ) -- Shouldn't get this case, except if C is empty
-  | done τ => (.satisfied, τ)
-
-theorem reduced?_satisfied_iff {σ : PS} {τ τ' : PPA} {C : IClause} :
-    σ.reduced? τ C = (.satisfied, τ') ↔ (C.toPropFun).bind σ.toSubst = ⊤ := by
-  sorry
-  done
-
-theorem reduced?_falsified_iff {σ : PS} {τ τ' : PPA} {C : IClause} :
-    σ.reduced? τ C = (.falsified, τ') ↔ (C.toPropFun).bind σ.toSubst ≤ ⊥ := by
-  sorry
-  done
-
-theorem reduced?_notReduced_iff {σ : PS} {τ τ' : PPA} {C : IClause} :
-    σ.reduced? τ C = (.notReduced, τ') ↔ (C.toPropFun).bind σ.toSubst = ↑C := by
-  sorry
-  done
-
-theorem reduced?_reduced {σ : PS} {τ τ' : PPA} {C : IClause} :
-    σ.reduced? τ C = (.reduced, τ') →
-      ((C.toPropFun).bind σ.toSubst ≠ ⊤ ∧ (C.toPropFun).bind σ.toSubst ≠ ⊥) := by
-  sorry
-  done
+open ReductionResult
 
 /- Reduction without tautology checking -/
 
-def seval (σ : PS) (p : Bool × Bool) (l : ILit) : ResultT Unit (Bool × Bool) :=
-  -- Has there been a non-id map, and has there been an literal that's unassigned
-  let ⟨reduced?, unassigned?⟩ := p
+-- Evaluate the provided literal under the PS
+@[inline, always_inline]
+def seval (σ : PS) (l : ILit) : ReductionResult :=
   match σ.litValue l with
-  | .tr => done ()
-  | .fls => ok (true, unassigned?)
-  | .lit lit => ok (reduced? || (l != lit), true)
+  | Sum.inr true => satisfied
+  | Sum.inr false => reduced
+  | Sum.inl lit => if (l != lit) then reduced else notReduced
+
+-- API-breaking version
+/-
+def varValue (σ : PS) (v : IVar) : PSV :=
+  match σ.gens.get? v.index with
+  | none => Sum.inl (mkPos v)
+  | some gen =>
+    if gen ≥ σ.generation then
+      match σ.mappings.get? v.index with
+      | none => Sum.inl (mkPos v) -- Technically, dead branch
+      | some n => n
+    else
+      Sum.inl (mkPos v)
+-/
+@[inline, always_inline]
+def seval' (σ : PS) (l : ILit) : ReductionResult :=
+  if hl : l.index < σ.gens.size then
+    let gen := σ.gens.get ⟨l.index, hl⟩
+    if gen ≥ σ.generation then
+      let n := σ.mappings.get ⟨l.index, by rw [σ.sizes_eq] at hl; exact hl⟩
+      match n with
+      | 0 => if polarity l then satisfied else reduced
+      | 1 => if polarity l then reduced else satisfied
+      | _ => reduced -- Technically can map to itself, but well-formed witnesses don't do this
+    else notReduced
+  else notReduced
+
+@[inline]
+def seval_fold_fn (σ : PS) (res : ReductionResult) (lit : ILit) : ReductionResult :=
+  match res with
+  | satisfied => satisfied
+  | reduced =>
+    match seval σ lit with
+    | satisfied => satisfied
+    | reduced => reduced
+    | notReduced => reduced
+  | notReduced =>
+    match seval σ lit with
+    | satisfied => satisfied
+    | reduced => reduced
+    | notReduced => notReduced
+
+@[inline]
+def seval_fold_fn' (σ : PS) (res : ReductionResult) (lit : ILit) : ReductionResult :=
+  match res with
+  | satisfied => satisfied
+  | reduced =>
+    match seval' σ lit with
+    | satisfied => satisfied
+    | reduced => reduced
+    | notReduced => reduced
+  | notReduced =>
+    match seval' σ lit with
+    | satisfied => satisfied
+    | reduced => reduced
+    | notReduced => notReduced
+
+def seval_fold (σ : PS) (C : IClause) : ReductionResult :=
+  C.foldl (init := notReduced) (seval_fold_fn σ)
+
+def seval_fold' (σ : PS) (C : IClause) : ReductionResult :=
+  let rec loop (i : Nat) (b : Bool) : ReductionResult :=
+    if h : i < C.size then
+      match seval σ (C.get ⟨i, h⟩) with
+      | satisfied => satisfied
+      | reduced => loop (i + 1) true
+      | notReduced => loop (i + 1) b
+    else
+      if b then reduced else notReduced
+    termination_by C.size - i
+  loop 0 false
+
+def seval_fold'' (σ : PS) (C : IClause) : ReductionResult := Id.run do
+  let mut reduced? : Bool := false
+  for lit in C do
+    match seval σ lit with
+    | satisfied => return satisfied
+    | reduced => reduced? := true
+    | notReduced => continue
+
+  if reduced? then
+    return reduced
+  else
+    return notReduced
+
+theorem seval_fold_eq_seval_fold' (σ : PS) (C : IClause) :
+    σ.seval_fold C = σ.seval_fold' C := by
+  have ⟨C⟩ := C
+  rw [seval_fold, seval_fold']
+  stop
+  suffices ∀ (res : ReductionResult) (b : Bool), res ≠ satisfied →
+    ((res = reduced) ↔ b) → ({ data := C } : IClause).foldl (fun res lit =>
+    match res with
+    | satisfied => satisfied
+    | reduced =>
+      match seval σ lit with
+      | satisfied => satisfied
+      | reduced => reduced
+      | notReduced => reduced
+    | notReduced =>
+      match seval σ lit with
+      | satisfied => satisfied
+      | reduced => reduced
+      | notReduced => notReduced) res 0 = seval_fold'.loop σ { data := C } 0 b by
+    sorry
+    done
+  intro res b hres hb
+  induction C generalizing res b with
+  | nil =>
+    cases res
+    <;> cases b
+    <;> try simp at hb
+    <;> try contradiction
+    · simp [seval_fold'.loop]
+    · simp [seval_fold'.loop]
+    done
+  | cons l ls ih =>
+    cases res
+    · contradiction
+    <;> simp
+    · rw [Array.foldl_cons]
+      simp only
+      cases hσ : seval σ l
+      · simp only
+        done
+      done
+    done
+  done
+
+-- Alternate view of reduction, using indexes into an array
+def reduceOnIndexes (σ : PS) (C : IClause) (s e : Nat) : ReductionResult :=
+  let min_e := min e C.size
+  let rec go (i : Nat) (reduced? : Bool) : ReductionResult :=
+    if hi : i < min_e then
+      match seval' σ (C.get ⟨i, Nat.lt_of_lt_of_le hi (min_le_right e C.size)⟩) with
+      | satisfied => satisfied
+      | reduced => go (i + 1) true
+      | notReduced => go (i + 1) reduced?
+    else
+      if reduced? then reduced else notReduced
+  termination_by (min e C.size) - i
+  go s false
+
+#exit
+
+-- CC: Helpful?
+/-
+theorem litValue_tr_iff_seval_satisfied {σ : PS} {r : Bool} {l : ILit} :
+    (σ.litValue l = .tr) ↔ (σ.seval r l = error ()) := by
+  simp [seval]; aesop
+
+def reduceRes (res : Except Unit Bool) : ReductionResult :=
+  match res with
+  | ok true => .reduced
+  | ok false => .notReduced
+  | error _ => .satisfied
 
 def reduce (σ : PS) (C : IClause) : ReductionResult :=
-  match C.foldlM (seval σ) (false, false) with
-  | ok (true, true) => .reduced
-  | ok (true, false) => .falsified
-  | ok (false, true) => .notReduced
-  | ok (false, false) => .notReduced -- Shouldn't get this, unless if C is empty
-  | done () => .satisfied
+  reduceRes <| C.foldlM (seval σ) false
 
--- TODO: It is possible only the forward directions are needed
 theorem reduce_satisfied_iff {σ : PS} {C : IClause} :
-    σ.reduce C = .satisfied ↔ (C.toPropFun).bind σ.toSubst = ⊤ := by
-  sorry
-  done
-
-theorem reduce_falsified_iff {σ : PS} {C : IClause} :
-    σ.reduce C = .falsified ↔ (C.toPropFun).bind σ.toSubst ≤ ⊥ := by
-  sorry
-  done
+    σ.reduce C = .satisfied ↔ (C.toPropFun).substL σ.toSubst = ⊤ := by
+  have ⟨C⟩ := C
+  rw [reduce, reduceRes, Array.foldlM_eq_foldlM_data]
+  --generalize hb : false = b
+  induction C with
+  | nil => simp [reduce, pure, Except.pure]
+  | cons l ls ih =>
+    match hσ : σ.litValue l with
+    | .tr => simp [← litValue_eq_substL' (lt_size_of_litValue_tr hσ), hσ, seval]; rfl
+    | .fls =>
+      simp [← litValue_eq_substL' (lt_size_of_litValue_fls hσ), hσ, seval]
+      --TODO: need to generalize across input
+      stop
+      simp [seval, hσ, LitVar.toPropFun]
+    | .lit lit =>
+      by_cases hls : l = lit
+      · subst hls
+        simp [seval, hσ]
+        constructor
+        · intro h; simp [ih.mp h]
+        · sorry
+          done
+      · stop
+        done
 
 theorem reduce_notReduced_iff {σ : PS} {C : IClause} :
-    σ.reduce C = .notReduced ↔ (C.toPropFun).bind σ.toSubst = ↑C := by
+    σ.reduce C = .notReduced ↔ (C.toPropFun).substL σ.toSubst = ↑C := by
   sorry
   done
 
 theorem reduce_reduced {σ : PS} {C : IClause} :
     σ.reduce C = .reduced ↔
-      ((C.toPropFun).bind σ.toSubst ≠ ⊤ ∧ (C.toPropFun).bind σ.toSubst ≠ ⊥) := by
+      ((C.toPropFun).substL σ.toSubst ≠ ⊤ ∧ (C.toPropFun).substL σ.toSubst ≠ ⊥) := by
   sorry
   done
+  -/
 
 end monadic
 

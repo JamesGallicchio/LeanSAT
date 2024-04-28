@@ -42,12 +42,17 @@ instance : Coe IVar (PropFun IVar) := ⟨toPropFun⟩
 protected abbrev index (v : IVar) : Nat := v.natPred
 protected abbrev fromIndex (n : Nat) : IVar := n.succPNat
 
+@[simp] theorem index_lt_val (v : IVar) : v.index < v.val := by
+  exact Nat.lt_of_le_pred v.property Nat.le.refl
+
 end IVar
 
 /-! ### Literals -/
 
 def ILit := { i : Int // i ≠ 0 }
   deriving DecidableEq, Repr
+
+instance : Inhabited ILit := ⟨1, by decide⟩
 
 instance : LitVar ILit IVar where
   negate l := ⟨-l.val, Int.neg_ne_zero.mpr l.property⟩
@@ -105,8 +110,14 @@ instance : Coe ILit (PropFun IVar) := ⟨LitVar.toPropFun⟩
 
 /-! index: a way to get a Nat from an ILit -/
 
-protected abbrev index (l : ILit) : Nat := (toVar l).natPred
-protected abbrev fromIndex (n : Nat) : ILit := mkPos (n.succPNat)
+protected abbrev index (l : ILit) : Nat := (toVar l).index
+protected abbrev fromIndex (n : Nat) : ILit := IVar.fromIndex n
+
+@[simp] theorem index_lt_val (l : ILit) : l.index < l.val.natAbs := by
+  exact Nat.pred_lt' (Int.natAbs_pos.mpr l.property)
+
+@[simp] theorem index_lt_toVar_val (l : ILit) : l.index < (toVar l).val := by
+  exact Nat.pred_lt' (Int.natAbs_pos.mpr l.property)
 
 theorem exists_succ_toVar (l : ILit) : ∃ n, (toVar l).val = n + 1 := by
   exact Nat.exists_eq_add_of_le' (toVar l).property

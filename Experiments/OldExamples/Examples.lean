@@ -1,6 +1,6 @@
-import Examples.Encoding.Akari
-import Examples.Encoding.NumberLink
-import Examples.Encoding.Yajilin
+import Experiments.OldExamples.Encoding.Akari
+import Experiments.OldExamples.Encoding.NumberLink
+import Experiments.OldExamples.Encoding.Yajilin
 
 open LeanSAT Examples
 

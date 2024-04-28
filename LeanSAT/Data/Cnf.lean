@@ -11,6 +11,8 @@ import LeanSAT.Model.PropFun
 import LeanSAT.Model.PropVars
 import LeanSAT.Model.Subst
 
+import Std.Data.Array.Basic
+
 namespace LeanSAT
 
 open Model
@@ -58,11 +60,22 @@ def toPropFun (l : L) : PropFun ν :=
 
 instance : CoeHead L (PropFun ν) := ⟨toPropFun⟩
 
-open PropFun in
+open PropFun
+
 theorem satisfies_iff {τ : PropAssignment ν} {l : L} :
     τ ⊨ toPropFun l ↔ τ (toVar l) = polarity l := by
   dsimp [toPropFun, polarity]
   aesop
+
+theorem toPropFun_ne_bot (l : L) : toPropFun l ≠ ⊥ := by
+  cases hpol : polarity l <;> simp [toPropFun, hpol]
+  · exact var_ne_top _
+  · exact var_ne_bot _
+
+theorem toPropFun_ne_top (l : L) : toPropFun l ≠ ⊤ := by
+  cases hpol : polarity l <;> simp [toPropFun, hpol]
+  · exact var_ne_bot _
+  · exact var_ne_top _
 
 end LitVar
 
@@ -125,18 +138,80 @@ theorem mkPos_or_mkNeg (l : L) : l = mkPos (toVar l) ∨ l = mkNeg (toVar l) := 
   dsimp [toPropFun]
   aesop
 
-theorem ext_iff (l1 l2 : L) : l1 = l2 ↔ toVar l1 = toVar l2 ∧ polarity l1 = polarity l2 := by
+theorem ext_iff (l₁ l₂ : L) : l₁ = l₂ ↔ toVar l₁ = toVar l₂ ∧ polarity l₁ = polarity l₂ := by
   constructor
   · rintro rfl; simp
   · aesop
 
-@[simp] theorem neg_eq_neg (l1 l2 : L) : -l1 = -l2 ↔ l1 = l2 := by
+@[simp] theorem neg_eq_neg (l₁ l₂ : L) : -l₁ = -l₂ ↔ l₁ = l₂ := by
   constructor
   · rw [ext_iff, ext_iff (L := L)]; simp
   · rintro rfl; rfl
 
 @[simp] theorem neg_neg (l : L) : - (- l) = l := by
   rw [ext_iff]; simp
+
+theorem neg_eq_iff_eq_neg {l₁ l₂ : L} : -l₁ = l₂ ↔ l₁ = -l₂ := by
+  constructor
+  · intro h; rw [← h, neg_neg]
+  · intro h; rw [h, neg_neg]
+
+-- CC: Reasoning about literal equality wrt polarity and toVar runs into a lot of cases.
+--     These lemmas fill in the gaps.
+theorem ne_of_polarity_ne {l₁ l₂ : L} : polarity l₁ ≠ polarity l₂ → l₁ ≠ l₂ := by
+  intro hne
+  rw [ne_eq]
+  rintro rfl
+  contradiction
+
+theorem ne_of_toVar_ne {l₁ l₂ : L} : toVar l₁ ≠ toVar l₂ → l₁ ≠ l₂ := by
+  intro hne
+  rw [ne_eq]
+  rintro rfl
+  contradiction
+
+@[simp] theorem ne_neg_self (l : L) : l ≠ -l := by
+  apply ne_of_polarity_ne
+  simp only [polarity_negate, ne_eq, Bool.not_eq_not]
+
+@[simp] theorem neg_ne_self (l : L) : -l ≠ l :=
+  Ne.symm (ne_neg_self l)
+
+@[simp] theorem negate_mkPos (v : ν) : -((mkPos v) : L) = mkNeg v := by
+  ext
+  · simp only [toVar_negate, toVar_mkNeg, toVar_mkPos]
+  · simp only [polarity_negate, polarity_mkPos, Bool.not_true, polarity_mkNeg]
+
+@[simp] theorem negate_mkNeg (v : ν) : -((mkNeg v) : L) = mkPos v := by
+  ext
+  · simp only [toVar_negate, toVar_mkNeg, toVar_mkPos]
+  · simp only [polarity_negate, polarity_mkNeg, Bool.not_false, polarity_mkPos]
+
+theorem eq_negate_of_var_eq_of_ne {l₁ l₂ : L} : (toVar l₁) = (toVar l₂) → l₁ ≠ l₂ → l₁ = -l₂ := by
+  intro hvar hne
+  rcases mkPos_or_mkNeg l₁ with (h₁ | h₁)
+  · rcases mkPos_or_mkNeg l₂ with (h₂ | h₂)
+    · rw [h₁, h₂, hvar] at hne; contradiction
+    · rw [h₁, h₂, hvar, negate_mkNeg]
+  · rcases mkPos_or_mkNeg l₂ with (h₂ | h₂)
+    · rw [h₁, h₂, hvar, negate_mkPos]
+    · rw [h₁, h₂, hvar] at hne; contradiction
+
+-- Cayden TODO: there's probably a one-line proof of this
+theorem negate_eq_of_var_eq_of_ne {l₁ l₂ : L} : (toVar l₁) = (toVar l₂) → l₁ ≠ l₂ → -l₁ = l₂ := by
+  intro h₁ h₂
+  have := congrArg (-·) (eq_negate_of_var_eq_of_ne h₁ h₂)
+  simp at this
+  exact this
+
+theorem eq_trichotomy (l₁ l₂ : L) : l₁ = l₂ ∨ l₁ = -l₂ ∨ (toVar l₁) ≠ (toVar l₂) := by
+  by_cases hvar : toVar l₁ = toVar l₂
+  · by_cases hpol : polarity l₁ = polarity l₂
+    · exact Or.inl (LawfulLitVar.ext _ _ hvar hpol)
+    · have := congrArg (-·) (negate_eq_of_var_eq_of_ne hvar (ne_of_polarity_ne hpol))
+      simp at this
+      exact Or.inr (Or.inl this)
+  · exact Or.inr (Or.inr hvar)
 
 variable [DecidableEq ν]
 
@@ -250,6 +325,39 @@ def toPropFun (C : Clause L) : PropFun ν :=
 
 instance : CoeHead (Clause L) (PropFun ν) := ⟨toPropFun⟩
 
+@[simp]
+theorem toPropFun_empty : toPropFun (#[] : Clause L) = ⊥ := by
+  simp [toPropFun, PropFun.any]
+
+@[simp]
+theorem toPropFun_nil : toPropFun ({ data := [] } : Clause L) = ⊥ :=
+  toPropFun_empty
+
+@[simp]
+theorem toPropFun_cons (l : L) (ls : List L) :
+    toPropFun ({ data := l :: ls } : Clause L) =
+      (LitVar.toPropFun (l : L)) ⊔ toPropFun ({ data := ls } : Clause L) := by
+  simp [toPropFun, PropFun.any]
+
+@[simp]
+theorem foldl_toPropFun_eq (C : Clause L) (acc : PropFun ν) :
+    C.foldl (fun φ l => φ ⊔ (LitVar.toPropFun l)) acc = C.toPropFun ⊔ acc := by
+  have ⟨C⟩ := C
+  rw [Array.foldl_eq_foldl_data]
+  induction C generalizing acc with
+  | nil => simp [toPropFun, PropFun.any]
+  | cons hd tl ih =>
+    simp at ih
+    simp [Array.foldl]
+    rw [ih (acc ⊔ LitVar.toPropFun hd)]
+    conv => lhs; rhs; rw [sup_comm]
+    rw [← sup_assoc]
+    conv => lhs; lhs; rw [sup_comm]
+
+theorem foldl_bot_toPropFun_eq (C : Clause L) :
+    C.foldl (fun φ l => φ ⊔ (LitVar.toPropFun l)) ⊥ = C.toPropFun := by
+  simp [foldl_toPropFun_eq]
+
 theorem mem_semVars_toPropFun [DecidableEq ν] (x : ν) (C : Clause L)
   : x ∈ C.toPropFun.semVars → ∃ l, l ∈ C ∧ LitVar.toVar l = x := by
   intro h
@@ -321,6 +429,38 @@ nonrec def map (L') [LitVar L' ν'] (f : ν → ν') (c : Clause L) : Clause L' 
   ext τ
   simp [map, satisfies_iff]
 
+@[simp]
+theorem of_append (l₁ l₂ : List L) : { data := l₁ ++ l₂ : Clause L } =
+    { data := l₁ : Clause L } ++ { data := l₂ : Clause L } := by
+  show { data := l₁ ++ l₂ : Clause L } = { data := ({data := l₁ : Clause L } ++ { data := l₂ : Clause L }).data }
+  simp only [Array.append_data]
+
+@[simp]
+theorem toPropFun_append (C₁ C₂ : Clause L) : (C₁ ++ C₂).toPropFun = C₁.toPropFun ⊔ C₂.toPropFun := by
+  ext; aesop (add norm satisfies_disj, norm satisfies_iff)
+
+theorem toPropFun_mem_le {C : Clause L} {l : L} (h : l ∈ C) : LitVar.toPropFun l ≤ C.toPropFun := by
+  apply PropFun.entails_ext.mpr
+  intro σ hσ
+  apply satisfies_iff.mpr
+  use l
+
+theorem toPropFun_getElem_le {C : Clause L} {i : Nat} (h : i < C.size) : LitVar.toPropFun (C[i]'h) ≤ C.toPropFun := by
+  have := C.getElem_mem_data h
+  rw [Array.mem_data] at this
+  exact toPropFun_mem_le this
+
+theorem toPropFun_take_le (C : Clause L) (i : Nat) : toPropFun ⟨C.data.take i⟩ ≤ C.toPropFun := by
+  apply PropFun.entails_ext.mpr
+  intro σ hσ
+  have ⟨l, hl, hl'⟩ := satisfies_iff.mp hσ
+  apply satisfies_iff.mpr
+  use l
+  constructor
+  · rw [← Array.mem_data] at hl ⊢
+    exact List.mem_of_mem_take hl
+  · exact hl'
+
 end Clause
 
 /-! ### CNF -/
@@ -336,6 +476,20 @@ variable {L : Type u} {ν : Type v} [LitVar L ν] [DecidableEq ν]
 
 def toPropFun (φ : Cnf L) : PropFun ν :=
   .all (φ.data.map Clause.toPropFun)
+
+@[simp]
+theorem toPropFun_empty : toPropFun (#[] : Cnf L) = ⊤ := by
+  simp [toPropFun, PropFun.all]
+
+@[simp]
+theorem toPropFun_nil : toPropFun ({ data := [] } : Cnf L) = ⊤ :=
+  toPropFun_empty
+
+@[simp]
+theorem toPropFun_cons (C : Clause L) (F : List (Clause L)) :
+    toPropFun ({ data := C :: F } : Cnf L) =
+      ↑C ⊓ toPropFun ({ data := F } : Cnf L) := by
+  simp [toPropFun, PropFun.all]
 
 theorem semVars_toPropFun (F : Cnf L)
   : v ∈ (toPropFun F).semVars → ∃ C, C ∈ F ∧ ∃ l, l ∈ C ∧ LitVar.toVar l = v := by
@@ -370,6 +524,17 @@ theorem satisfies_iff {τ : PropAssignment ν} {φ : Cnf L} :
   rw [toPropFun]
   rcases φ with ⟨φ⟩
   induction φ <;> simp_all [Array.mem_def]
+
+theorem le_of_mem {F : Cnf L} {C : Clause L} :
+    C ∈ F → F.toPropFun ≤ C.toPropFun := by
+  intro h
+  apply PropFun.entails_ext.mpr
+  intro τ hF
+  rw [satisfies_iff] at hF
+  exact hF _ h
+
+theorem ith_le {F : Cnf L} (i : Fin F.size) : F.toPropFun ≤ F[i].toPropFun :=
+  le_of_mem Array.getElem?_mem
 
 def addClause (C : Clause L) (f : Cnf L) : Cnf L := f.push C
 

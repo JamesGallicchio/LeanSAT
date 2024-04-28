@@ -198,9 +198,7 @@ theorem Array.mkArray_succ' (n : Nat) (a : α) :
   simp [foldl, foldlM, Id.run]
   by_cases h : stop = 0
   · simp [h, foldlM.loop]
-  · simp [h]
-    unfold foldlM.loop
-    simp [Nat.not_lt_zero start]
+  · simp [h]; simp [foldlM.loop]
 
 @[simp] theorem Array.foldl_nil (f : β → α → β) (init : β) (start stop : Nat) :
     Array.foldl f init { data := [] } start stop = init :=
@@ -218,6 +216,89 @@ theorem Array.mkArray_succ' (n : Nat) (a : α) :
   have ⟨B⟩ := B
   simp only [foldl_eq_foldl_data, append_data]
   exact List.foldl_append _ _ _ _
+
+@[simp] theorem Array.foldlM_empty {m : Type v → Type w} [Monad m] (f : β → α → m β)
+    (init : β) (start stop : Nat) :
+    Array.foldlM f init #[] start stop = pure init := by
+  simp [foldlM, Id.run]
+  by_cases h : stop = 0
+  · simp [h, foldlM.loop]
+  · simp [h]; simp [foldlM.loop]
+
+@[simp] theorem Array.foldlM_nil {m : Type v → Type w} [Monad m] (f : β → α → m β)
+    (init : β) (start stop : Nat) :
+    Array.foldlM f init { data := [] } start stop = pure init :=
+  Array.foldlM_empty f init start stop
+
+@[simp] theorem Array.foldlM_cons {m : Type v → Type w} [Monad m] (f : β → α → m β)
+    (init : β) (a : α) (as : List α) :
+    Array.foldlM f init { data := a :: as } 0 (size { data := a :: as }) = do
+      { Array.foldlM f (← f init a) { data := as } 0 (size { data := as }) } := by
+  simp only [foldlM_eq_foldlM_data, List.foldlM]
+
+@[simp] theorem Array.foldlM_cons_succ {m : Type v → Type w} [Monad m] (f : β → α → m β)
+    (init : β) (a : α) (as : List α) (start stop : Nat) :
+    start < stop → stop < size { data := a :: as } →
+      Array.foldlM f init { data := a :: as } (start + 1) (stop + 1) =
+        Array.foldlM f init { data := as } start stop := by
+  sorry
+  done
+
+@[simp] theorem Array.foldlM_trivial {m : Type v → Type w} [Monad m] (f : β → α → m β)
+    (init : β) (as : Array α) (i : Nat) :
+    as.foldlM f init i i = pure init := by
+  simp [foldlM, Id.run]
+  split <;> rename _ => hi
+  · simp [foldlM.loop]
+  · rw [foldlM.loop]
+    simp at hi
+    simp [Nat.not_lt_of_le (Nat.le_of_lt hi)]
+
+@[simp] theorem Array.foldl_trivial (f : β → α → β)
+    (init : β) (as : Array α) (i : Nat) :
+    as.foldl f init i i = init := by
+  simp [foldl, Id.run]
+
+theorem Array.foldlM_gt {m : Type v → Type w} [Monad m] {A : Array α} {i : Nat} :
+    i > A.size → ∀ (f : β → α → m β) init, A.foldlM f init i = pure init := by
+  intro hi f init
+  simp [foldlM, Id.run]
+  rw [foldlM.loop]
+  simp [Nat.not_lt_of_le (Nat.le_of_lt hi)]
+
+theorem Array.foldl_gt {A : Array α} {i : Nat} :
+    i > A.size → ∀ (f : β → α → β) init, A.foldl f init i = init := by
+  intro hi f init
+  simp [Array.foldl, Id.run]
+  exact Array.foldlM_gt (m := Id) hi f init
+
+theorem Array.exists_split {A : Array α} {i : Nat} (hi : i ≤ A.size) :
+    ∃ (B C : Array α), A = B ++ C ∧ B.size = i ∧ C.size = A.size - i := by
+  have ⟨A⟩ := A
+  induction A with
+  | nil =>
+    simp at hi; subst hi
+    simp
+    exact ⟨#[], #[], rfl, rfl, rfl⟩
+  | cons a as ih =>
+    simp at hi
+    rcases Nat.eq_or_lt_of_le hi with (rfl | h_lt)
+    · refine ⟨{ data := a :: as }, #[], rfl, by simp, by simp⟩
+    · simp at ih
+      rcases ih (Nat.le_of_lt_succ h_lt) with ⟨B, C, h_eq, hB, hC⟩
+      refine ⟨{ data := [a] } ++ B, C, ?_, ?_, ?_⟩
+      · simp [Array.append_assoc, ← h_eq]
+        have :  a :: as = [a] ++ as := rfl
+        rw [this]
+        sorry
+        done
+      · sorry
+        done
+      · sorry
+        done
+      done
+    done
+  done
 
 @[simp] theorem Array.size_set! (A : Array α) (i : Nat) (v : α) : (A.set! i v).size = A.size := by
   rw [set!, Array.size_setD]
