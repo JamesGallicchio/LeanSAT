@@ -57,18 +57,21 @@ protected class Formula (F : Type _) where
   empty : F
   addLiteral : F → ILit → F
   commitClause : F → F
+  commitClauseUntil : F → Nat → F
   size : F → Nat
 
 instance : SRParser.Formula (RangeArray ILit) where
   empty := (RangeArray.empty : RangeArray ILit)
   addLiteral := RangeArray.push
   commitClause := RangeArray.commit
+  commitClauseUntil := RangeArray.commitUntil
   size := RangeArray.size
 
 instance : SRParser.Formula (ICnf × IClause) where
   empty := (#[], #[])
   addLiteral := (fun ⟨F, C⟩ l => ⟨F, C.push l⟩)
   commitClause := (fun ⟨F, C⟩ => (F.push C, #[]))
+  commitClauseUntil := (fun ⟨F, C⟩ _ => (F, C)) -- CC: TODO
   size := (fun ⟨F, _⟩ => F.size)
 
 variable {CNF : Type _} [SRParser.Formula CNF]
@@ -298,6 +301,8 @@ def parseLSRLine (F : CNF) (s : String) : Except String (Nat × CNF × (SRAdditi
         | ok _ => throw "Zero not found on deletion line"
         | error e => return ⟨id, F, .inr (SRDeletionLine.mk (← e))⟩
       | _ =>
+        let F := SRParser.Formula.commitClauseUntil F (id - 1)
+
       -- We have an addition line, so the maxId should strictly increase
         -- CC: Similarly, we don't care that the ID line is strictly increasing,
         --     only that the clause doesn't exist in the formula yet.
@@ -415,6 +420,8 @@ partial def parseLSRLineBinary (F : CNF) (A : ByteArray) (index : Nat)
 
     -- Addition line
     if lineStart = 1 then
+      let F := SRParser.Formula.commitClauseUntil F (lineId.natAbs - 1)
+
       -- Check if we have a pivot
       if index < A.size then
         let ⟨pivot, index⟩ := readBinaryToken A index

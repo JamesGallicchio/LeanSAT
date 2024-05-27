@@ -24,6 +24,9 @@ import LeanSAT.Upstream.ToMathlib
 
 import Experiments.ProofChecking.PPA
 
+import LeanColls
+open LeanColls
+
 open LeanSAT LeanSAT.Model Nat
 open LitVar ILit IVar LawfulLitVar
 open PropFun
@@ -74,6 +77,10 @@ instance : Coe Bool PSV := ⟨Sum.inr⟩
 
 instance : Coe PSV (PropForm IVar) := ⟨toPropForm⟩
 instance : Coe PSV (PropFun IVar) := ⟨toPropFun⟩
+
+@[simp] theorem toPropFun_lit (l : ILit) : toPropFun (Sum.inl l) = LitVar.toPropFun l := rfl
+@[simp] theorem toPropFun_true : toPropFun (Sum.inr true) = ⊤ := rfl
+@[simp] theorem toPropFun_false : toPropFun (Sum.inr false) = ⊥ := rfl
 
 -- CC: Was originally (Int.natAbs l.val) * 2, but made proofs hard
 --     See if this is slower?
@@ -670,19 +677,7 @@ def seval (σ : PS) (l : ILit) : ReductionResult :=
   | Sum.inr false => reduced
   | Sum.inl lit => if (l != lit) then reduced else notReduced
 
--- API-breaking version
-/-
-def varValue (σ : PS) (v : IVar) : PSV :=
-  match σ.gens.get? v.index with
-  | none => Sum.inl (mkPos v)
-  | some gen =>
-    if gen ≥ σ.generation then
-      match σ.mappings.get? v.index with
-      | none => Sum.inl (mkPos v) -- Technically, dead branch
-      | some n => n
-    else
-      Sum.inl (mkPos v)
--/
+-- API-breaking version, go fast
 @[inline, always_inline]
 def seval' (σ : PS) (l : ILit) : ReductionResult :=
   if hl : l.index < σ.gens.size then
@@ -692,125 +687,170 @@ def seval' (σ : PS) (l : ILit) : ReductionResult :=
       match n with
       | 0 => if polarity l then satisfied else reduced
       | 1 => if polarity l then reduced else satisfied
-      | _ => reduced -- Technically can map to itself, but well-formed witnesses don't do this
+      | n => if PSV.toMapped' l != n then reduced else notReduced
     else notReduced
   else notReduced
 
-@[inline]
-def seval_fold_fn (σ : PS) (res : ReductionResult) (lit : ILit) : ReductionResult :=
-  match res with
-  | satisfied => satisfied
-  | reduced =>
-    match seval σ lit with
-    | satisfied => satisfied
-    | reduced => reduced
-    | notReduced => reduced
-  | notReduced =>
-    match seval σ lit with
-    | satisfied => satisfied
-    | reduced => reduced
-    | notReduced => notReduced
+theorem seval'_eq_seval (σ : PS) (l : ILit) :
+    σ.seval' l = σ.seval l := by sorry
 
-@[inline]
-def seval_fold_fn' (σ : PS) (res : ReductionResult) (lit : ILit) : ReductionResult :=
-  match res with
-  | satisfied => satisfied
-  | reduced =>
-    match seval' σ lit with
-    | satisfied => satisfied
-    | reduced => reduced
-    | notReduced => reduced
-  | notReduced =>
-    match seval' σ lit with
-    | satisfied => satisfied
-    | reduced => reduced
-    | notReduced => notReduced
+@[inline, always_inline]
+def sevalM (σ : PS) (reduced? : Bool) (l : ILit) : Except Unit Bool :=
+  match σ.litValue l with
+  | Sum.inr true => .error ()
+  | Sum.inr false => .ok true
+  | Sum.inl lit => if (l != lit) then .ok true else .ok reduced?
 
-def seval_fold (σ : PS) (C : IClause) : ReductionResult :=
-  C.foldl (init := notReduced) (seval_fold_fn σ)
+def reduceM_Except : Except Unit Bool → ReductionResult
+  | .ok true => reduced
+  | .ok false => notReduced
+  | .error _ => satisfied
 
-def seval_fold' (σ : PS) (C : IClause) : ReductionResult :=
-  let rec loop (i : Nat) (b : Bool) : ReductionResult :=
-    if h : i < C.size then
-      match seval σ (C.get ⟨i, h⟩) with
+def reduceM (σ : PS) (C : IClause) : ReductionResult :=
+  reduceM_Except <| C.foldlM (init := false) (sevalM σ)
+
+def reduce (σ : PS) (C : IClause) : ReductionResult :=
+  let rec loop (i : Nat) (reduced? : Bool) : ReductionResult :=
+    if hi : i < Size.size C then
+      let lit := Seq.get C ⟨i, hi⟩
+      match seval σ lit with
       | satisfied => satisfied
+      | notReduced => loop (i + 1) reduced?
       | reduced => loop (i + 1) true
-      | notReduced => loop (i + 1) b
-    else
-      if b then reduced else notReduced
-    termination_by C.size - i
-  loop 0 false
-
-def seval_fold'' (σ : PS) (C : IClause) : ReductionResult := Id.run do
-  let mut reduced? : Bool := false
-  for lit in C do
-    match seval σ lit with
-    | satisfied => return satisfied
-    | reduced => reduced? := true
-    | notReduced => continue
-
-  if reduced? then
-    return reduced
-  else
-    return notReduced
-
-theorem seval_fold_eq_seval_fold' (σ : PS) (C : IClause) :
-    σ.seval_fold C = σ.seval_fold' C := by
-  have ⟨C⟩ := C
-  rw [seval_fold, seval_fold']
-  stop
-  suffices ∀ (res : ReductionResult) (b : Bool), res ≠ satisfied →
-    ((res = reduced) ↔ b) → ({ data := C } : IClause).foldl (fun res lit =>
-    match res with
-    | satisfied => satisfied
-    | reduced =>
-      match seval σ lit with
-      | satisfied => satisfied
-      | reduced => reduced
-      | notReduced => reduced
-    | notReduced =>
-      match seval σ lit with
-      | satisfied => satisfied
-      | reduced => reduced
-      | notReduced => notReduced) res 0 = seval_fold'.loop σ { data := C } 0 b by
-    sorry
-    done
-  intro res b hres hb
-  induction C generalizing res b with
-  | nil =>
-    cases res
-    <;> cases b
-    <;> try simp at hb
-    <;> try contradiction
-    · simp [seval_fold'.loop]
-    · simp [seval_fold'.loop]
-    done
-  | cons l ls ih =>
-    cases res
-    · contradiction
-    <;> simp
-    · rw [Array.foldl_cons]
-      simp only
-      cases hσ : seval σ l
-      · simp only
-        done
-      done
-    done
-  done
-
--- Alternate view of reduction, using indexes into an array
-def reduceOnIndexes (σ : PS) (C : IClause) (s e : Nat) : ReductionResult :=
-  let min_e := min e C.size
-  let rec go (i : Nat) (reduced? : Bool) : ReductionResult :=
-    if hi : i < min_e then
-      match seval' σ (C.get ⟨i, Nat.lt_of_lt_of_le hi (min_le_right e C.size)⟩) with
-      | satisfied => satisfied
-      | reduced => go (i + 1) true
-      | notReduced => go (i + 1) reduced?
     else
       if reduced? then reduced else notReduced
-  termination_by (min e C.size) - i
-  go s false
+  termination_by Size.size C - i
+  loop 0 false
+
+def LawfulReduce (Red : PS → IClause → ReductionResult) : Prop :=
+  ∀ (σ : PS) (C : IClause),
+    ((Red σ C = .satisfied) → (C.toPropFun).substL σ.toSubst = ⊤)
+  ∧ ((Red σ C = .notReduced) → (C.toPropFun).substL σ.toSubst = C)
+
+theorem foldlM_sevalM_true (σ : PS) (C : IClause) :
+    (C.foldlM (sevalM σ) true = .ok true) ∨ -- ∧ ((C.toPropFun).substL σ.toSubst ≠ ⊤)) ∨
+    (C.foldlM (sevalM σ) true = .error () ∧ (C.toPropFun).substL σ.toSubst = ⊤) := by
+  have ⟨C⟩ := C
+  rw [Array.foldlM_eq_foldlM_data]
+  induction C with
+  | nil => simp [pure, Except.pure]
+  | cons l ls ih =>
+    match hl : σ.litValue l with
+    | Sum.inl l' =>
+      simp [sevalM, hl]
+      rcases ih with (h | ⟨h₁, h₂⟩)
+      · exact Or.inl h
+      · right
+        use h₁
+        simp [h₂]
+    | Sum.inr true =>
+      simp [sevalM, hl]
+      right
+      use rfl
+      simp [← litValue_eq_substL', hl]
+    | Sum.inr false =>
+      simp [sevalM, hl]
+      rcases ih with (h | ⟨h₁, h₂⟩)
+      · exact Or.inl h
+      · right
+        use h₁
+        simp [h₂]
+
+theorem reduceM_Lawful : LawfulReduce reduceM := by
+  intro σ C
+  have ⟨C⟩ := C
+  rw [reduceM, Array.foldlM_eq_foldlM_data]
+  induction C with
+  | nil => simp [reduceM_Except, pure, Except.pure]
+  | cons l ls ih =>
+    match hl : σ.litValue l with
+    | Sum.inl l' =>
+      simp [sevalM, hl]
+      by_cases hl : l = l'
+      · subst hl; simp [bind, Except.bind]
+        simp at ih
+        constructor
+        <;> intro h
+        <;> simp [h] at ih
+        <;> simp [ih, ← litValue_eq_substL', hl]
+      · simp [hl]
+        rcases foldlM_sevalM_true σ ({ data := ls } : IClause) with (hls | ⟨hls, hpf⟩)
+        <;> rw [Array.foldlM_eq_foldlM_data] at hls
+        <;> simp at hls
+        <;> simp [bind, Except.bind, reduceM_Except, hls]
+        simp [hpf]
+    | Sum.inr true =>
+      simp [sevalM, reduceM_Except, hl, ← litValue_eq_substL', bind, Except.bind]
+    | Sum.inr false =>
+      simp [sevalM, reduceM_Except, hl]
+      rcases foldlM_sevalM_true σ ({ data := ls } : IClause) with (hls | hls)
+      <;> rw [Array.foldlM_eq_foldlM_data] at hls
+      <;> simp at hls
+      <;> simp [bind, Except.bind, reduceM_Except, hls]
+
+theorem reduce.loop.cons_aux (σ : PS) (l : ILit) {ls : List ILit} {i j : Nat} :
+    j = ls.length - i → reduce.loop σ ⟨l :: ls⟩ (i + 1) = reduce.loop σ ({ data := ls } : IClause) i := by
+  intro hj
+  ext reduced?
+  induction j generalizing reduced? i with
+  | zero =>
+    have : i ≥ ls.length := Nat.le_of_sub_eq_zero hj.symm
+    unfold loop
+    simp [LeanColls.size, not_lt.mpr this, not_lt.mpr (succ_le_succ_iff.mpr this)]
+  | succ j ih =>
+    rw [succ_eq_add_one] at hj
+    unfold loop
+    simp [LeanColls.size, succ_eq_add_one]
+    have hi : i < List.length ls := by
+      apply Nat.lt_of_sub_pos
+      rw [← hj]
+      exact Nat.zero_lt_succ j
+    simp [hi]
+    have : Seq.get ({data := l :: ls} : IClause) ⟨i + 1, succ_lt_succ hi⟩
+      = Seq.get ({data := ls} : IClause) ⟨i, hi⟩ := rfl
+    rw [this]
+    split <;> rename _ => h_get
+    <;> simp [h_get]
+    <;> apply ih (Nat.eq_sub_succ_of_succ_eq_sub hj)
+
+theorem reduce.loop.cons (σ : PS) (l : ILit) (ls : List ILit) (i : Nat) :
+    reduce.loop σ ⟨l :: ls⟩ (i + 1) = reduce.loop σ ({ data := ls } : IClause) i :=
+  @reduce.loop.cons_aux σ l ls i (ls.length - i) rfl
+
+theorem reduce_eq_reduceM_aux (σ : PS) (C : IClause) (reduced? : Bool) :
+    reduce.loop σ C 0 reduced? = reduceM_Except (C.foldlM (sevalM σ) reduced?) := by
+  have ⟨C⟩ := C
+  induction C generalizing σ reduced? with
+  | nil =>
+    unfold reduce.loop
+    simp [pure, Except.pure, reduceM_Except, LeanColls.size]
+    cases reduced?
+    <;> simp
+  | cons l ls ih =>
+    rw [reduce.loop, reduceM_Except, Array.foldlM_cons, sevalM]
+    split <;> rename _ => hi
+    · have h_get_l : Seq.get ({ data := l :: ls } : IClause) ⟨0, hi⟩ = l := rfl
+      simp only [reduce.loop.cons, h_get_l, seval]
+      match hl : σ.litValue l with
+      | Sum.inr true => rfl
+      | Sum.inr false => exact ih σ true
+      | Sum.inl lit =>
+        by_cases h_eq : l = lit
+        · simp [h_eq]
+          exact ih σ reduced?
+        · simp [h_eq]
+          exact ih σ true
+    · simp [LeanColls.size] at hi
+
+theorem reduce_eq_reduceM (σ : PS) (C : IClause) :
+    reduce σ C = reduceM σ C := by
+  rw [reduce, reduceM]
+  exact reduce_eq_reduceM_aux σ C false
+
+theorem reduce_Lawful : LawfulReduce reduce := by
+  intro σ C
+  rw [reduce_eq_reduceM]
+  exact reduceM_Lawful σ C
 
 #exit
 

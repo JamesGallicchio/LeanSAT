@@ -1139,7 +1139,7 @@ theorem assumeNegatedClauseForM_nil (τ : PPA) (bumps : Nat) :
   simp [assumeNegatedClauseForM]; rfl
 
 def LawfulAssumeNegatedClauseFor (f : PPA → IClause → Nat → Except PPA PPA) : Prop :=
-  ∀ {τ τ' : PPA} {C : IClause} {bumps : Nat},
+  ∀ (τ τ' : PPA) (C : IClause) (bumps : Nat),
     (f τ C bumps = .error τ' → τ.toPropFun ≤ C) ∧
     (f τ C bumps = .ok τ' →
       τ'.toPropFun = ↑τ ⊓ (↑C)ᶜ ∧ extended τ τ' bumps)
@@ -1187,184 +1187,9 @@ theorem assumeNegatedClauseForM_error :
       · rw [litValue?_true_iff] at hτ
         exact le_sup_of_le_left hτ
 
-/-
-theorem assumeNegatedClauseForM_Lawful : LawfulAssumeNegatedClauseFor assumeNegatedClauseForM := by
-  rintro τ τ' ⟨C⟩ bumps
-  rw [assumeNegatedClauseForM]
-  induction C generalizing τ with
-  | nil => simp [pure, Except.pure]; rintro rfl; simp
-  | cons l ls ih =>
-    simp [-Array.size_mk] at ih ⊢
-    cases hl : τ.litValue? l
-    <;> simp [hl]
-    <;> rw [← inf_assoc]
-    · rw [← litValue?_negate_none_iff] at hl
-      rcases @ih (τ.setLitFor (-l) bumps) with ⟨ih₁, ih₂⟩
-      constructor
-      · intro h
-        have := ih₁ h
-        simp [toPropFun_setLit_of_none hl, inf_compl_le_iff_le_sup] at this
-        exact this
-      · intro h
-        rcases ih₂ h with ⟨h₁, h₂⟩
-        simp [toPropFun_setLit_of_none hl] at h₁
-        exact ⟨h₁, extended_trans (extended_setLitFor_of_none hl _) h₂⟩
-    · rename Bool => b
-      cases b
-      · rcases @ih τ with ⟨ih₁, ih₂⟩
-        constructor
-        · exact fun h => le_sup_of_le_right (ih₁ h)
-        · intro h
-          have := ih₂ h
-          rw [litValue?_false_iff_eq_inf] at hl
-          rwa [hl] at this
-      · simp
-        rw [litValue?_true_iff] at hl
-        constructor
-        · exact fun _ => le_sup_of_le_left hl
-        · intro h_con; contradiction -/
-
 theorem assumeNegatedClauseForM_Lawful : LawfulAssumeNegatedClauseFor assumeNegatedClauseForM := by
   intro τ τ' C bumps
   exact ⟨assumeNegatedClauseForM_error, assumeNegatedClauseForM_ok⟩
-
-/-
--- TODO: Is this used?
-theorem assumeNegatedClauseForM_error_of_le {τ : PPA} {C : IClause} (bumps : Nat) :
-    τ.toPropFun ≤ C → ∃ τ', (τ.assumeNegatedClauseForM C bumps) = .error τ' := by
-  have ⟨C⟩ := C
-  induction' C with l ls ih generalizing τ
-  · simp [toPropFun_ne_bot]
-  · simp [assumeNegatedClauseForM, -Array.size_mk]
-    intro h
-    cases hτ : τ.litValue? l
-    · have : toPropFun (setLitFor τ (-l) bumps) = τ.toPropFun ⊓ lᶜ := by
-        rw [← litValue?_negate_none_iff] at hτ
-        simp [toPropFun_setLit_of_none hτ]
-      replace h := inf_compl_le_iff_le_sup.mpr h
-      rw [← this] at h
-      exact ih h
-    · rename Bool => b
-      cases b
-      · rw [← inf_compl_le_iff_le_sup, ← litValue?_false_iff_eq_inf.mp hτ] at h
-        exact ih h
-      · simp [hτ]; exact ⟨τ, rfl⟩
-
--- CC: Ideally we'd say l ≤ C as a stand-in for ∈, but if C is a tautology,
---     then this applies for all literals. Of course, if C is a tautology,
---     then assumeNegatedClause returns error instead of ok, but setting
---     that up for this theorem seems like overkill.
--- CC TODO: Lots of duplication. Clean up with lemmas later.
--- TODO: Remove?
-theorem assumeNegatedClauseForM_ok_spec {τ τ' : PPA} {C : IClause} {bumps : Nat} :
-    (τ.assumeNegatedClauseForM C bumps) = .ok τ' →
-      ∀ (l : ILit), (l ∈ C →
-        (τ'.litValue? l = some false) ∧
-        (τ.litValue? l = none → τ'.isSetFor (toVar l) = bumps + 1) ∧
-        (τ.litValue? l = some false → τ'.isSetFor (toVar l) = τ.isSetFor (toVar l))) ∧
-         (l ∉ C → (-l) ∉ C → τ'.litValue? l = τ.litValue? l ∧ τ'.isSetFor (toVar l) = τ.isSetFor (toVar l)) := by
-  have ⟨C⟩ := C
-  induction' C with l ls ih generalizing τ
-  · simp [← Array.mem_data]; rintro rfl l; exact ⟨rfl, rfl⟩
-  · intro h
-    have h_copy := h
-    simp [assumeNegatedClauseForM, ← Array.mem_data, -Array.size_mk] at h ⊢
-    simp [← Array.mem_data] at ih
-    intro l'
-    constructor
-    · rintro (rfl | hmem)
-      · split at h <;> rename litValue? τ l' = _ => heq
-        · by_cases hls : l' ∈ ls
-          · rcases (ih h l').1 hls with ⟨h₁, _, h₃⟩
-            simp at h₃
-            simp [heq]
-            exact ⟨h₁, h₃⟩
-          · by_cases hlsn : (-l') ∈ ls
-            · have : Clause.toPropFun ({ data := l' :: ls } : IClause) = ⊤ := by
-                rw [Clause.tautology_iff]
-                use l'
-                simp [← Array.mem_data] at hls ⊢
-                exact ⟨_, hlsn, by simp⟩
-              replace this : τ.toPropFun ≤ ({ data := l' :: ls } : IClause) := by
-                rw [this]; exact le_top
-              rcases assumeNegatedClauseForM_error_of_le bumps this with ⟨τ'', hτ''⟩
-              rw [hτ''] at h_copy
-              injection h_copy
-            · rcases (ih h l').2 hls hlsn with ⟨h₁, h₂⟩
-              simp at h₁ h₂
-              simp [heq]
-              exact ⟨h₁, h₂⟩
-        · by_cases hls : l' ∈ ls
-          · exact (ih h l').1 hls
-          · by_cases hlsn : (-l') ∈ ls
-            · have : Clause.toPropFun ({ data := l' :: ls } : IClause) = ⊤ := by
-                rw [Clause.tautology_iff]
-                use l'
-                simp [← Array.mem_data] at hls ⊢
-                exact ⟨_, hlsn, by simp⟩
-              replace this : τ.toPropFun ≤ ({ data := l' :: ls } : IClause) := by
-                rw [this]; exact le_top
-              rcases assumeNegatedClauseForM_error_of_le bumps this with ⟨τ'', hτ''⟩
-              rw [hτ''] at h_copy
-              injection h_copy
-            · rcases (ih h l').2 hls hlsn with ⟨h₁, h₂⟩
-              simp [heq] at h₁ ⊢
-              exact ⟨h₁, h₂⟩
-        · have : τ.toPropFun ≤ ({ data := l' :: ls } : IClause) := by
-            simp [le_sup_of_le_left (litValue?_true_iff.mp heq)]
-          rcases assumeNegatedClauseForM_error_of_le bumps this with ⟨τ'', hτ''⟩
-          rw [hτ''] at h_copy
-          injection h_copy
-      · split at h <;> rename litValue? τ l = _ => heq
-        · rcases (ih h l').1 hmem with ⟨h₁, h₂, h₃⟩
-          use h₁
-          rcases eq_trichotomy l l' with (rfl | rfl | hll')
-          · simp [heq] at h₃ ⊢
-            exact h₃
-          · have : Clause.toPropFun ({ data := -l' :: ls } : IClause) = ⊤ := by
-              rw [Clause.tautology_iff]
-              use l'
-              simp [← Array.mem_data]
-              exact hmem
-            replace this : τ.toPropFun ≤ ({ data := -l' :: ls } : IClause) := by
-              rw [this]; exact le_top
-            rcases assumeNegatedClauseForM_error_of_le bumps this with ⟨τ'', hτ''⟩
-            rw [hτ''] at h_copy
-            injection h_copy
-          · have : toVar (-l) ≠ toVar l' := by simp [hll']
-            rw [litValue?_setLitFor_of_ne this] at h₂ h₃
-            rw [setLitFor_isSetFor_of_ne this] at h₃
-            exact ⟨h₂, h₃⟩
-        · exact (ih h l').1 hmem
-        · injection h
-    · simp [not_or]
-      intro hne hmem h_neg_ne h_neg_mem
-      split at h <;> rename litValue? τ l = _ => heq
-      · rcases (ih h l').2 hmem h_neg_mem with ⟨h₁, h₂⟩
-        have : toVar (-l) ≠ toVar l' := by
-          rcases eq_trichotomy l l' with (rfl | rfl | h) <;> try contradiction
-          simp [h]
-        rw [litValue?_setLitFor_of_ne this] at h₁
-        rw [setLitFor_isSetFor_of_ne this] at h₂
-        exact ⟨h₁, h₂⟩
-      · exact (ih h l').2 hmem h_neg_mem
-      · injection h -/
-
-/-
-For a general statement, we might say something like:
-
-theorem assumeNegatedClauseForM_ok {τ τ' : PPA} {C : IClause} {bumps : Nat} :
-    (τ.assumeNegatedClauseForM C bumps) = .ok τ' →
-      ∀ (l : ILit), (l ∈ C →
-        (τ'.litValue? l = some false) ∧
-        (τ.litValue? l = none → τ'.isSetFor (toVar l) = bumps + 1) ∧
-        (τ.litValue? l = some false → τ'.isSetFor (toVar l) = τ.isSetFor (toVar l))) ∧
-         (l ∉ C → (-l) ∉ C → τ'.litValue? l = τ.litValue? l ∧ τ'.isSetFor (toVar l) = τ.isSetFor (toVar l))
-
-However, the SR checker only assumes the negated clause on a reset assignment.
-So we prove the specific case, which allows us to write `uniform` instead of
-the complicated expression above as a postcondition.
--/
 
 -- Just to simplify things, we include the postcondition from aNCF_ok
 theorem assumeNegatedClauseForM_reset_ok {τ τ' : PPA} {C : IClause} {bumps : Nat} :
@@ -1401,9 +1226,9 @@ theorem assumeNegatedClauseFor.loop.cons_aux (τ : PPA) (l : ILit) (bumps : Nat)
     split <;> rename _ => h_get
     <;> simp [h_get]
     · apply @ih (setLitFor τ (-Seq.get ({ data := ls } : IClause) { val := i, isLt := hi }) bumps) (i + 1)
-      rw [← Nat.sub_sub, ← hj, Nat.add_sub_cancel]
+      exact Nat.eq_sub_succ_of_succ_eq_sub hj
     · apply @ih τ
-      rw [← Nat.sub_sub, ← hj, Nat.add_sub_cancel]
+      exact Nat.eq_sub_succ_of_succ_eq_sub hj
 
 theorem assumeNegatedClauseFor.loop.cons (τ : PPA) (l : ILit) (ls : List ILit) (bumps i : Nat) :
     assumeNegatedClauseFor.loop { data := l :: ls } bumps (i + 1) τ
@@ -1432,7 +1257,10 @@ theorem assumeNegatedClauseFor_eq_assumeNegatedClauseForM (τ : PPA) (C : IClaus
       · rfl
     · simp [LeanColls.size] at hi
 
-
+theorem assumeNegatedClauseFor_Lawful : LawfulAssumeNegatedClauseFor assumeNegatedClauseFor := by
+  intro τ τ' C bumps
+  rw [assumeNegatedClauseFor_eq_assumeNegatedClauseForM]
+  exact ⟨assumeNegatedClauseForM_error, assumeNegatedClauseForM_ok⟩
 
 end assumeNegatedClause /- section -/
 
@@ -1666,12 +1494,12 @@ def unitProp (τ : PPA) (C : IClause) : UPResult :=
   termination_by Size.size C - i
   go 0 none
 
-/-- A unit propagation function `UP` is lawful if it returns `MUPResult`s as expected. -/
+/-- A unit propagation function `UP` is lawful if it returns `UPResult`s as expected. -/
 def LawfulUP (UP : PPA → IClause → UPResult) : Prop :=
   ∀ (τ : PPA) (C : IClause),
     (UP τ C = .falsified → C.toPropFun ⊓ τ = ⊥)
   ∧ (∀ {l : ILit}, UP τ C = .unit l →
-        l ∈ C ∧ τ.litValue? l = none ∧ C.toPropFun ⊓ τ ≤ l.toPropFun ⊓ τ)
+        l ∈ C ∧ τ.litValue? l = none ∧ C.toPropFun ⊓ τ = l.toPropFun ⊓ τ)
   ∧ (UP τ C = .satisfied → τ ≤ C.toPropFun)
 
 theorem LawfulUP_of_eq_of_LawfulUP {UP UP' : PPA → IClause → UPResult} :
@@ -1690,9 +1518,10 @@ theorem foldlM_pevalM_some {τ : PPA} {unit : ILit} :
     ∨ (C.foldlM (pevalM τ) (some unit) = error false)) := by
   intro h_unit C
   have ⟨C⟩ := C
-  induction' C with l ls ih generalizing τ
-  · simp [pure, Except.pure]
-  · simp only [Array.foldlM_cons, pevalM]
+  induction C generalizing τ with
+  | nil => simp [pure, Except.pure]
+  | cons l ls ih =>
+    simp only [Array.foldlM_cons, pevalM]
     match hl : τ.litValue? l with
     | none =>
       by_cases h_eq : l = unit
@@ -1724,9 +1553,10 @@ theorem foldlM_pevalM_some {τ : PPA} {unit : ILit} :
 
 theorem unitPropM_LawfulUP : LawfulUP unitPropM := by
   rintro τ ⟨C⟩
-  induction' C with l ls ih generalizing τ
-  · simp [unitPropM, pure, Except.pure]
-  · rw [unitPropM, unitPropM_Except, Array.foldlM_cons, pevalM]
+  induction C generalizing τ with
+  | nil => simp [unitPropM, pure, Except.pure]
+  | cons l ls ih =>
+    rw [unitPropM, unitPropM_Except, Array.foldlM_cons, pevalM]
     match hl : τ.litValue? l with
     | none =>
       -- CC: Can probably be cleaned up, since the lemma above uses ∨, not →
@@ -1796,16 +1626,16 @@ theorem unitProp.go.cons_aux (τ : PPA) (l : ILit) {ls : List ILit} {i j : Nat} 
     split <;> rename _ => h_get
     <;> simp [h_get]
     · apply @ih τ (i + 1)
-      rw [← Nat.sub_sub, ← hj, Nat.add_sub_cancel]
+      exact Nat.eq_sub_succ_of_succ_eq_sub hj
     · match unit? with
       | none =>
         apply @ih τ (i + 1)
-        rw [← Nat.sub_sub, ← hj, Nat.add_sub_cancel]
+        exact Nat.eq_sub_succ_of_succ_eq_sub hj
       | some u =>
         by_cases h_eq : u = Seq.get ({ data := ls } : IClause) ⟨i, hi⟩
         · simp only [h_eq]
           apply @ih τ (i + 1)
-          rw [← Nat.sub_sub, ← hj, Nat.add_sub_cancel]
+          exact Nat.eq_sub_succ_of_succ_eq_sub hj
         · simp only [h_eq]; rfl
 
 theorem unitProp.go.cons (τ : PPA) (l : ILit) (ls : List ILit) (i : Nat) :

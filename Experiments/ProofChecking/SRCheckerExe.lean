@@ -49,24 +49,24 @@ partial def main : List String → IO Unit
 
     let lsrContents ← IO.FS.withFile lsrFile .read (·.readToEnd)
     let lines := lsrContents.splitOn "\n"
-    interpretResult <| lines.foldlM (init := SR.SRState.mk F (PPA.new (nvars * 2)) (PS.new (nvars * 2))) (fun st line =>
-      match SRParser.parseLSRLine st.F line with
-      | .error str =>
-        dbg_trace s!"Error: {str}"
+    interpretResult <| lines.foldlM (init := SR.SRState.mk F (PPA.new (nvars * 2)) (PS.new (nvars * 2))) (fun ⟨F, τ, σ⟩ line =>
+      match SRParser.parseLSRLine F line with
+      | .error _ =>
+        -- dbg_trace s!"Error: {str}"
         .error false
-      | .ok (id, F, pl) =>
-        let st := { st with F := F.commitUntil (id - 1) }
+      | .ok (_, F, pl) =>
+        -- dbg_trace s!"Parsed line with id {id}"
         match pl with
         | .inl addLine =>
-          SR.checkLine st addLine
+          SR.checkLine ⟨F, τ, σ⟩ addLine
         | .inr delLine =>
-          delLine.clauses.foldlM (fun st clauseId =>
-            if hc : clauseId < st.F.size then
-              if st.F.isDeletedFin ⟨clauseId, hc⟩ then
+          delLine.clauses.foldlM (fun ⟨F, τ, σ⟩ clauseId =>
+            if hc : clauseId < F.size then
+              if F.isDeletedFin ⟨clauseId, hc⟩ then
                 .error false
               else
-                .ok { st with F := st.F.deleteFin ⟨clauseId, hc⟩ }
-            else .error false) st)
+                .ok ⟨F.deleteFin ⟨clauseId, hc⟩, τ, σ⟩
+            else .error false) ⟨F, τ, σ⟩)
   | [cnfFile, lsrFile, "c"] => do
     let cnfContents ← IO.FS.withFile cnfFile .read (·.readToEnd)
     let (F, nvars) ← IO.ofExcept <| SRParser.parseFormula cnfContents (RangeArray.empty : RangeArray ILit)
@@ -77,11 +77,12 @@ partial def main : List String → IO Unit
     | ⟨F, τ, σ⟩ => do
       if index < b_size then
         match SRParser.parseLSRLineBinary F bytes index with
-        | .error str =>
-          dbg_trace s!"Error: {str}"
+        | .error _ =>
+          -- dbg_trace s!"Error: {str}"
           .error false
-        | .ok (index, id, F, pl) =>
-          let F := F.commitUntil (id - 1)
+        | .ok (index, _, F, pl) =>
+          -- dbg_trace s!"Parsed line with id {id}"
+          --let F := F.commitUntil (id - 1)
           match pl with
           | .inl addLine =>
             match SR.checkLine ⟨F, τ, σ⟩ addLine with

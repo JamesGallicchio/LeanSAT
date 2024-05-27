@@ -41,6 +41,12 @@ theorem Nat.eq_or_lt_of_lt_succ {m n : Nat} : m < n + 1 → m = n ∨ m < n := b
   · exact Or.inl rfl
   · exact Or.inr h
 
+-- Mostly used for backwards-induction proofs
+theorem Nat.eq_sub_succ_of_succ_eq_sub {k n m : Nat} : k + 1 = n - m → k = n - (m + 1) := by
+  rw [← Nat.sub_sub]
+  intro hk
+  rw [← hk, Nat.add_sub_cancel]
+
 /-! Int -/
 
 theorem Int.eq_zero_of_lt_neg_iff_lt (i : Int) : (0 < -i ↔ 0 < i) → i = 0 := by
