@@ -343,6 +343,9 @@ theorem le_compl_iff_inf_le_bot {φ₁ φ₂ : PropFun ν} : φ₁ ≤ φ₂ᶜ 
 theorem le_iff_inf_compl_eq_bot {φ₁ φ₂ : PropFun ν} : φ₁ ≤ φ₂ ↔ φ₁ ⊓ φ₂ᶜ = ⊥ :=
   BooleanAlgebra.le_iff_inf_compl_eq_bot
 
+theorem le_compl_iff_inf_eq_bot {φ₁ φ₂ : PropFun ν} : φ₁ ≤ φ₂ᶜ ↔ φ₁ ⊓ φ₂ = ⊥ :=
+  BooleanAlgebra.le_compl_iff_inf_eq_bot
+
 theorem ne_top_left_of_disj_ne_top {φ₁ φ₂ : PropFun ν} : φ₁ ⊔ φ₂ ≠ ⊤ → φ₁ ≠ ⊤ := by
   intro h; aesop
 

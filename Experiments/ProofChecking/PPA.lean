@@ -430,6 +430,18 @@ def setLitFor (τ : PPA) (l : ILit) (extraBumps : Nat) : PPA :=
 
 /-! Lemmas about the above operations -/
 
+theorem varValue?_bump_none_of_varValue?_none {τ : PPA} {v : IVar} :
+    τ.varValue? v = none → τ.bump.varValue? v = none := by
+  intro h
+  simp [varValue?, bump] at h ⊢
+  split at h
+  · rfl
+  · split
+    · rename _ => h_gen
+      have := le_of_succ_le h_gen
+      simp [this] at h
+    · rfl
+
 theorem setVar_eq_setVarFor (τ : PPA) (v : IVar) (b : Bool) :
     τ.setVar v b = τ.setVarFor v b 0 := by
   simp [setVar, setVarFor]
@@ -1007,16 +1019,58 @@ theorem uniform_of_uniform_of_extended {τ₁ τ₂ : PPA} {offset : Nat} :
   intro hτ₁ h_ext v hv
   by_cases isSet τ₁ v <;> aesop
 
-/-theorem uniform_bump_of_uniform_succ_of_extended {τ₁ τ₂ : PPA} {offset : Nat} :
-    uniform τ₁ (offset + 2) → extended τ₁ τ₂ 0 →
-      uniform τ₂.bump (offset + 1) ∧ τ₂.bump.toPropFun = τ₁.toPropFun := by
+-- CC: Note 5/27: the (+2) is necessary for equality, which *is* needed in the checker.
+-- If everything set in τ₂ is set only until the next bump, then τ₂'s bump is
+-- uniform and is at most constrained as much as τ₁.
+theorem uniform_bump_of_uniform_of_extended {τ₁ τ₂ : PPA} {offset : Nat} :
+    uniform τ₁ (offset + 1) → extended τ₁ τ₂ 0 →
+      uniform τ₂.bump offset ∧ τ₁.toPropFun ≤ τ₂.bump.toPropFun := by
   intro h_uni h_ext
   constructor
-  · have := uniform_of_uniform_of_extended h_uni h_ext
-    intro v hv
+  · intro v hv
     have := isSet_of_isSet_bump hv
     by_cases hτ₁ : τ₁.isSet v
+    · rcases (h_ext v).1 hτ₁ with ⟨h₁, _⟩
+      have := h_uni _ hτ₁
+      rw [← h₁] at this
+      simp [this]
+    · have := (h_ext v).2 hτ₁ this
+      simp at this
+      simp [← isSetFor_pos_iff, this] at hv
+  · refine entails_ext.mpr fun τ hτ => ?_
+    rw [satisfies_iff_vars] at hτ ⊢
+    intro v b hv
+    apply hτ
+    rw [← hv]
+    clear hv
+    symm
+    by_cases hτ₁ : τ₁.isSet v
     · rcases (h_ext v).1 hτ₁ with ⟨h₁, h₂⟩
+      rw [← h₂]
+      have := h_uni _ hτ₁
+      rw [← h₁] at this
+      have : isSetFor τ₂ v > 1 := by simp [this]
+      exact varValue?_bump_of_isSetFor_pos this
+    · have := (h_ext v).2 hτ₁
+      simp [← isSetFor_pos_iff] at hτ₁
+      rw [isSetFor_zero_iff.mp hτ₁]
+      simp [isSetFor_pos_iff] at this
+      by_cases hτ₂ : isSet τ₂ v
+      · replace this := this hτ₂
+        apply isSetFor_zero_iff.mp
+        simp [this]
+      · simp [isSet] at hτ₂
+        exact varValue?_bump_none_of_varValue?_none hτ₂
+
+theorem uniform_bump_of_uniform_of_extended' {τ₁ τ₂ : PPA} {offset : Nat} :
+    uniform τ₁ (offset + 2) → extended τ₁ τ₂ 0 →
+      uniform τ₂.bump (offset + 1) ∧ τ₁.toPropFun = τ₂.bump.toPropFun := by
+  intro h_uni h_ext
+  constructor
+  · intro v hv
+    have := isSet_of_isSet_bump hv
+    by_cases hτ₁ : τ₁.isSet v
+    · rcases (h_ext v).1 hτ₁ with ⟨h₁, _⟩
       have := h_uni _ hτ₁
       rw [← h₁] at this
       simp [this]
@@ -1025,16 +1079,53 @@ theorem uniform_of_uniform_of_extended {τ₁ τ₂ : PPA} {offset : Nat} :
       simp [← isSetFor_pos_iff, this] at hv
   · ext τ
     constructor
+    · intro hτ₁
+      rw [satisfies_iff_vars] at hτ₁ ⊢
+      intro v b hv
+      apply hτ₁
+      rw [← hv]
+      clear hv
+      symm
+      by_cases hv : τ₁.isSet v
+      · rcases (h_ext v).1 hv with ⟨h₁, h₂⟩
+        rw [← h₂]
+        have := h_uni _ hv
+        rw [← h₁] at this
+        have : isSetFor τ₂ v > 1 := by simp [this]
+        exact varValue?_bump_of_isSetFor_pos this
+      · have := (h_ext v).2 hv
+        simp [← isSetFor_pos_iff] at hv
+        rw [isSetFor_zero_iff.mp hv]
+        simp [isSetFor_pos_iff] at this
+        by_cases hτ₂ : isSet τ₂ v
+        · replace this := this hτ₂
+          apply isSetFor_zero_iff.mp
+          simp [this]
+        · simp [isSet] at hτ₂
+          exact varValue?_bump_none_of_varValue?_none hτ₂
     · intro hτ₂
       rw [satisfies_iff_vars] at hτ₂ ⊢
       intro v b hv
-      rcases (h_ext v).1 (isSet_of_varValue?_some hv) with ⟨h₁, h₂⟩
-      rw [← h₂] at hv
       apply hτ₂
-
-      done
-
-    done -/
+      rw [← hv]
+      clear hv
+      by_cases hv : τ₁.isSet v
+      · rcases (h_ext v).1 hv with ⟨h₁, h₂⟩
+        rw [← h₂]
+        have := h_uni _ hv
+        rw [← h₁] at this
+        have : isSetFor τ₂ v > 1 := by simp [this]
+        exact varValue?_bump_of_isSetFor_pos this
+      · have := (h_ext v).2 hv
+        simp [← isSetFor_pos_iff] at hv
+        rw [isSetFor_zero_iff.mp hv]
+        simp [isSetFor_pos_iff] at this
+        by_cases hτ₂ : isSet τ₂ v
+        · replace this := this hτ₂
+          apply isSetFor_zero_iff.mp
+          simp [this]
+        · simp [isSet] at hτ₂
+          exact varValue?_bump_none_of_varValue?_none hτ₂
 
 /-! Assuming negated clauses -/
 
@@ -1140,7 +1231,8 @@ theorem assumeNegatedClauseForM_nil (τ : PPA) (bumps : Nat) :
 
 def LawfulAssumeNegatedClauseFor (f : PPA → IClause → Nat → Except PPA PPA) : Prop :=
   ∀ (τ τ' : PPA) (C : IClause) (bumps : Nat),
-    (f τ C bumps = .error τ' → τ.toPropFun ≤ C) ∧
+    (f τ C bumps = .error τ' →
+      τ.toPropFun ≤ C ∧ extended τ τ' bumps) ∧
     (f τ C bumps = .ok τ' →
       τ'.toPropFun = ↑τ ⊓ (↑C)ᶜ ∧ extended τ τ' bumps)
 
@@ -1150,9 +1242,10 @@ theorem assumeNegatedClauseForM_ok :
     (τ.assumeNegatedClauseForM C bumps) = .ok τ' →
       τ'.toPropFun = ↑τ ⊓ (↑C)ᶜ ∧ extended τ τ' bumps := by
   have ⟨C⟩ := C
-  induction' C with l ls ih generalizing τ
-  · simp; rintro rfl; simp
-  · simp [assumeNegatedClauseForM, -Array.size_mk] at ih ⊢
+  induction C generalizing τ with
+  | nil => simp; rintro rfl; simp
+  | cons l ls ih =>
+    simp [assumeNegatedClauseForM, -Array.size_mk] at ih ⊢
     cases hτ : τ.litValue? l
     <;> simp [hτ]
     <;> rw [← inf_assoc]
@@ -1169,23 +1262,26 @@ theorem assumeNegatedClauseForM_ok :
       · contradiction
 
 theorem assumeNegatedClauseForM_error :
-    (τ.assumeNegatedClauseForM C bumps) = .error τ' → τ.toPropFun ≤ C := by
+    (τ.assumeNegatedClauseForM C bumps) = .error τ' →
+      τ.toPropFun ≤ C ∧ extended τ τ' bumps := by
   have ⟨C⟩ := C
-  induction' C with l ls ih generalizing τ
-  · simp [toPropFun_ne_bot]
-  · simp [assumeNegatedClauseForM, -Array.size_mk]
+  induction C generalizing τ with
+  | nil => simp [toPropFun_ne_bot]
+  | cons l ls ih =>
+    simp [assumeNegatedClauseForM, -Array.size_mk]
     cases hτ : τ.litValue? l
     <;> simp [hτ]
     <;> intro h
-    · have := ih h
+    · rcases ih h with ⟨ih₁, ih₂⟩
       rw [← litValue?_negate_none_iff] at hτ
-      simp [toPropFun_setLit_of_none hτ] at this
-      exact sdiff_le_iff.mp this
+      simp [toPropFun_setLit_of_none hτ] at ih₁
+      exact ⟨sdiff_le_iff.mp ih₁, extended_trans (extended_setLitFor_of_none hτ _) ih₂⟩
     · rename Bool => b
       cases b
-      · exact le_sup_of_le_right (ih h)
+      · exact ⟨le_sup_of_le_right (ih h).1, (ih h).2⟩
       · rw [litValue?_true_iff] at hτ
-        exact le_sup_of_le_left hτ
+        injection h; rename _ => h; subst h
+        exact ⟨le_sup_of_le_left hτ, extended_refl _ _⟩
 
 theorem assumeNegatedClauseForM_Lawful : LawfulAssumeNegatedClauseFor assumeNegatedClauseForM := by
   intro τ τ' C bumps

@@ -374,7 +374,7 @@ theorem inf_le_iff_le_compl_sup : a ⊓ b ≤ c ↔ a ≤ bᶜ ⊔ c := by
 
 theorem inf_compl_le_iff_le_sup : a ⊓ bᶜ ≤ c ↔ a ≤ b ⊔ c := by
   conv => rhs; rhs; lhs; rw [← compl_compl b]
-  exact BooleanAlgebra.inf_le_iff_le_compl_sup
+  exact inf_le_iff_le_compl_sup
 
 theorem le_iff_inf_compl_le_bot : a ≤ b ↔ a ⊓ bᶜ ≤ ⊥ := by
   conv => lhs; rhs; rw [← compl_compl b]
@@ -388,5 +388,8 @@ theorem le_compl_iff_inf_le_bot : a ≤ bᶜ ↔ a ⊓ b ≤ ⊥ := by
 
 theorem le_iff_inf_compl_eq_bot : a ≤ b ↔ a ⊓ bᶜ = ⊥ := by
   rw [← le_bot_iff]; exact le_iff_inf_compl_le_bot
+
+theorem le_compl_iff_inf_eq_bot : a ≤ bᶜ ↔ a ⊓ b = ⊥ := by
+  rw [← le_bot_iff]; exact le_compl_iff_inf_le_bot
 
 end BooleanAlgebra

@@ -9,6 +9,7 @@ import LeanSAT.Upstream.ToStd
 import LeanSAT.Upstream.ToMathlib
 import LeanSAT.Model.PropFun
 import LeanSAT.Model.PropVars
+import LeanSAT.Model.Map
 import LeanSAT.Model.Subst
 
 import Std.Data.Array.Basic
@@ -268,10 +269,38 @@ def map [LitVar L V] [LitVar L' V'] (f : V → V') (l : L) : L' :=
   split <;> simp
 
 @[simp] theorem toPropFun_map [LitVar L V] [LitVar L' V'] [LawfulLitVar L' V']
-                    (f : V → V') (l : L)
+      (f : V → V') (l : L)
     : LitVar.toPropFun (LitVar.map f l : L') = (LitVar.toPropFun l).map f := by
   ext τ; simp
 
+-- Extension of substitution lemmas, for literals (avoid dependency cycle)
+theorem propForm_substL_distrib_lit [LitVar L ν] (l : L) (f : ν → PropForm ν₂) :
+    substL (toPropFun l) f = if polarity l then ⟦f (toVar l)⟧ else ⟦.neg (f (toVar l))⟧ := by
+  ext τ
+  split
+  <;> rename _ => hpol
+  <;> simp [PropAssignment.subst, satisfies_iff, hpol]
+
+theorem propFun_subst_distrib_lit [LitVar L ν] (l : L) (f : ν → PropFun ν₂) :
+    subst (toPropFun l) f = if polarity l then f (toVar l) else (f (toVar l))ᶜ := by
+  ext τ
+  split <;> rename _ => hpol
+  <;> simp [PropAssignment.subst, satisfies_iff, hpol]
+
+theorem propFun_substL_distrib_lit [LitVar L ν] (l : L) (f : ν → PropForm ν₂) :
+    substL (toPropFun l) f = if polarity l then ⟦f (toVar l)⟧ else ⟦PropForm.neg (f (toVar l))⟧ := by
+  ext τ
+  split <;> rename _ => hpol
+  <;> simp [PropAssignment.subst, satisfies_iff, hpol]
+
+/-
+theorem satisfies_iff {τ : PropAssignment ν} {C : Clause L} :
+    τ ⊨ C.toPropFun ↔ ∃ l ∈ C, τ ⊨ LitVar.toPropFun l
+-/
+
+--theorem satisfies_substL_iff {τ : PropAssignment ν} {l : L} {f : ν → PropForm ν} :
+--    τ ⊨ substL (toPropFun l) f ↔ τ ⊨ subst (toPropFun l) f := by
+---  simp [PropAssignment.subst, satisfies_iff]
 
 /-! #### Sums as valid literals -/
 
