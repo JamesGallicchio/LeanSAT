@@ -46,6 +46,28 @@ theorem mem_data_iff_exists_fin {A : Array α} {a : α} :
   · rintro ⟨i, rfl⟩
     exact Array.getElem_mem_data A i.isLt
 
+
+@[simp]
+theorem data_nil_eq_empty : ({ data := [] } : Array α) = #[] := rfl
+
+theorem singleton_eq_data (a : α) : #[a] = { data := [a] } := rfl
+
+-- CC: I feel like there's a more-compact proof
+theorem append_data_eq_append (as bs : List α) :
+    ({ data := as } : Array α) ++ { data := bs } = { data := as ++ bs } := by
+  rw [← append_eq_append, Array.append]
+  induction bs generalizing as with
+  | nil => simp
+  | cons b bs ih =>
+    rw [List.append_cons, ← ih]
+    rw [foldl_cons]
+    congr
+    simp [push]
+
+theorem singleton_append_data_eq_cons (a : α) (as : List α) :
+    #[a] ++ { data := as } = { data := a :: as } := by
+  rw [singleton_eq_data, append_data_eq_append]; rfl
+
 /-
 def head (A : Array α) (hA : A.size > 0) : α := A.get ⟨0, hA⟩
 def headD (A : Array α) (default : α) : α := if h : A.size > 0 then A.head h else default

@@ -109,9 +109,14 @@ def fromMapped (n : Nat) : PSV :=
 #check Int.cast_div
 #check Int.cast_div_charZero
 
-theorem exists_double {n : Nat} : n % 2 = 0 → ∃ m, n = 2 * m := by
+private theorem exists_double {n : Nat} : n % 2 = 0 → ∃ m, n = 2 * m := by
   intro h
-  sorry
+  use n / 2
+  induction n with
+  | zero => simp
+  | succ n ih =>
+    sorry
+    done
   done
   --rw [Nat.mod_eq_of_lt (Nat.succ_pos _)] at h
   --rw [Nat.div_eq_of_lt (Nat.succ_pos _)] at h

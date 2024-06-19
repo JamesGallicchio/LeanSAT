@@ -342,55 +342,9 @@ def reduce (σ : PS) (F : RangeArray ILit) (index : Fin F.size) : ReductionResul
   termination_by F.rsizeFin index - i
   loop 0 false
 
-def reduce' (σ : PS) (F : RangeArray ILit) (index : Fin F.size) : ReductionResult :=
-  let rsize := F.rsizeFin index
-  let rstart := F.indexFin index
-  let rec loop (i : Nat) (reduced? : Bool) : ReductionResult :=
-    if hi : i < rsize then
-      let lit := F.getFin ⟨rstart + i, index_add_offset_in_range index ⟨i, hi⟩⟩
-      match seval' σ lit with
-      | .satisfied => .satisfied
-      | .reduced => loop (i + 1) true
-      | .notReduced => loop (i + 1) reduced?
-    else
-      if reduced? then .reduced else .notReduced
-  termination_by F.rsizeFin index - i
-  loop 0 false
-
-def reduceDirect (σ : PS) (F : RangeArray ILit) (index : Fin F.size) : ReductionResult :=
-  let s := F.indexFin index
-  let rsize := F.rsizeFin index
-  let e : Nat := s + rsize
-  let he : e ≤ Size.size F.data := indexFin_add_rsizeFin_le_size index
-  let rec loop (i : Nat) (reduced? : Bool) : ReductionResult :=
-    if h : i < e then
-      let lit := F.getFin ⟨i, lt_of_lt_of_le h he⟩
-      match seval' σ lit with
-      | .satisfied => .satisfied
-      | .reduced => loop (i + 1) true
-      | .notReduced => loop (i + 1) reduced?
-    else
-      if reduced? then .reduced else .notReduced
-  termination_by e - i
-  loop s false
-
-/-
-  if hl : l.index < σ.gens.size then
-    let gen := σ.gens.get ⟨l.index, hl⟩
-    if gen ≥ σ.generation then
-      let n := σ.mappings.get ⟨l.index, by rw [σ.sizes_eq] at hl; exact hl⟩
-      match n with
-      | 0 => if polarity l then satisfied else reduced
-      | 1 => if polarity l then reduced else satisfied
-      | _ => reduced -- Technically can map to itself, but well-formed witnesses don't do this
-    else notReduced
-  else notReduced
--/
-
 def reduceBreak (σ : PS) (F : RangeArray ILit) (index : Fin F.size) : ReductionResult :=
   let s := F.indexFin index
-  let rsize := F.rsizeFin index
-  let e : Nat := s + rsize
+  let e : Nat := s + F.rsizeFin index
   let rec loop (i : Nat) (reduced? : Bool) : ReductionResult :=
     if h : i < e then
       let lit := F.getFin ⟨i, lt_of_lt_of_le h (indexFin_add_rsizeFin_le_size index)⟩
@@ -416,18 +370,6 @@ def reduceBreak (σ : PS) (F : RangeArray ILit) (index : Fin F.size) : Reduction
       if reduced? then .reduced else .notReduced
   termination_by (F.indexFin index + F.rsizeFin index) - i
   loop s false
-
--- CC: Causes quadratic(?) slowdown, from 0.79 secs to 12.21 secs on php25
---     Profiler claims that 41% of CPU is spent in σ.setLits though...
-def reduceM (σ : PS) (F : RangeArray ILit) (index : Fin F.size)
-    (h_del : F.isDeletedFin index = false) : ReductionResult :=
-  match ((F.foldlM_indexHyps (fun reduced? lit =>
-    match seval' σ lit with
-    | .satisfied => throw ()
-    | .reduced => return true
-    | .notReduced => return reduced?) false index h_del) : Except Unit Bool) with
-  | .ok reduced? => if reduced? then .reduced else .notReduced
-  | .error _ => .satisfied
 
 end RangeArray
 
