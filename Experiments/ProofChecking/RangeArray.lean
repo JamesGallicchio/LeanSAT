@@ -267,6 +267,16 @@ theorem indexFin_eq_index {A : RangeArray α} {i : Nat} (hi : i < A.size) : A.in
 theorem indexFin_eq_index?' {A : RangeArray α} (i : Fin A.size) : A.indexFin i = A.index i.val := by
   simp [index]
 
+theorem index_le_dataSize (i : Nat) : A.index i ≤ A.dsize := by
+  by_cases hi : i < A.size
+  <;> simp [index, hi]
+  exact A.h_indexes hi
+
+theorem index_le_index_of_le {i j : Nat} (hij : i ≤ j) (hj : j < A.size) :
+    A.index i ≤ A.index j := by
+  simp [index, hj, lt_of_le_of_lt hij hj]
+  exact A.h_indexes_inc hij hj
+
 /-- Checks whether the ith container is deleted. -/
 @[inline, always_inline]
 def isDeletedFin (i : Fin A.size) : Bool :=
@@ -1159,6 +1169,15 @@ theorem models_delete : ∀ {i : Nat} (hi : i < Size.size Ls),
     simp [uget_delete]
     exact h_models.h_uncommitted hj
 
+/-! # drop and take -/
+
+/-def drop (A : RangeArray α) : RangeArray α :=
+
+theorem models_cons {R : RangeArray α} {x : α} {xs : List α} {Ls : Option (List α)} {L : List α}
+  (h_models : R)
+
+#exit -/
+
 -- CC: Which direction does this theorem need to be in?
 /- theorem exists_model (A : RangeArray α) :
     ∃ (Ls : List (Option (List α))) (L : List α), models A Ls L := by -/
@@ -1206,6 +1225,53 @@ def ufoldl {β : Type v} (f : β → α → β)
     (init : β) (A : RangeArray α) : β :=
   A.data.foldl f init A.dsize (A.dsize + A.usize)
 
+def foldlM_index_looped {β : Type v} {m : Type v → Type w} [Monad m] (f : β → α → m β)
+    (init : β) (A : RangeArray α) (i : Nat) : m β :=
+  if isDeleted A i = false then
+    let rec loop (j : Nat) (b : β) : m β := do
+      if j < A.rsize i then
+        loop (j + 1) (← f b (A.oget i j))
+      else return b
+    termination_by A.rsize i - j
+    loop 0 init
+  else return init
+
+/-
+theorem unitProp.go.cons_aux (τ : PPA) (l : ILit) {ls : List ILit} {i j : Nat} :
+    j = ls.length - i → unitProp.go τ { data := l :: ls } (i + 1) = unitProp.go τ { data := ls } i := by
+
+    /-- Invariants -/
+
+  h_size : dataSize ≤ Size.size data
+  h_dataSize_empty : Size.size indexes = 0 → dataSize = 0
+
+  -- No index exceeds `dataSize`
+  h_indexes : ∀ {i : Nat} (hi : i < Size.size indexes),
+    RangeArray.getIndexFromMarkedIndex (Seq.get indexes ⟨i, hi⟩) ≤ dataSize
+
+  -- The indexes are monotonically increasing in (unmarked) value
+  h_indexes_inc : ∀ {i j : Nat} (hij : i ≤ j) (hj : j < Size.size indexes),
+-/
+
+--theorem foldlM_index_looped.loop.cons_aux
+
+/-theorem foldlM_index_looped_eq_foldlM_index {β : Type v} {m : Type v → Type w} [Monad m]
+    (f : β → α → m β) (init : β) (A : RangeArray α) (i : Nat) :
+      A.foldlM_index_looped f init i = A.foldlM_index f init i := by
+  have ⟨data, indexes, dataSize, _, h_size, h_dataSize_empty, h_indexes, h_indexes_inc⟩ := A
+  have ⟨data⟩ := data
+  have ⟨indexes⟩ := indexes
+  simp [foldlM_index_looped, foldlM_index]
+  induction data with
+  | nil =>
+    simp [foldlM, foldlM_index]
+  | cons x xs ih =>
+    simp [foldlM, foldlM_index]
+    rw [ih]
+    simp [foldlM_index_looped]
+
+#exit -/
+
 /-
 theorem unitProp.go.cons_aux (τ : PPA) (l : ILit) {ls : List ILit} {i j : Nat} :
     j = ls.length - i → unitProp.go τ { data := l :: ls } (i + 1) = unitProp.go τ { data := ls } i := by
@@ -1221,18 +1287,22 @@ theorem foldlM_index_eq_foldlM {i : Nat} {hi : i < Size.size Ls}
     {sL : List α} (hsL : Seq.get Ls ⟨i, hi⟩ = some sL)
     {β : Type v} {m : Type v → Type w} [Monad m] (f : β → α → m β) (init : β) :
     R.foldlM_index f init i = sL.foldlM f init := by
+  have ⟨data, indexes, dataSize, _, h_size, h_dataSize_empty, h_indexes, h_indexes_inc⟩ := A
+  have ⟨data⟩ := data
+  have ⟨indexes⟩ := indexes
   rw [foldlM_index]
   have := h_models.h_some hi
   simp [hsL] at this
   simp [this]
-  induction sL generalizing Ls with
+  sorry
+  /-induction sL generalizing Ls with
   | nil =>
     have := h_models.h_sizes hi hsL
     simp at this
     simp [this]
   | cons x xs ih =>
     stop
-    done
+    done -/
   done
 
 #exit

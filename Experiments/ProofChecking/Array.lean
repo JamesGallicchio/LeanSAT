@@ -68,6 +68,32 @@ theorem singleton_append_data_eq_cons (a : α) (as : List α) :
     #[a] ++ { data := as } = { data := a :: as } := by
   rw [singleton_eq_data, append_data_eq_append]; rfl
 
+--#check Array.foldlM_cons
+
+/-theorem foldlM_of_agree {β : Type v} {m : Type v → Type w} [Monad m]
+    {A : Array α} {L : List α} {offset : Nat}
+    (h_size : offset + L.length ≤ A.size)
+    (h_agree : ∀ {i : Nat} (hi : i < L.length),
+      A.get ⟨offset + i, by omega⟩ = L.get ⟨i, hi⟩)
+    (f : β → α → m β) (init : β) :
+    A.foldlM f init offset (offset + L.length) = L.foldlM f init := by
+  induction L generalizing A offset with
+  | nil => simp
+  | cons l ls ih =>
+    induction offset with
+    | zero =>
+      have ⟨A⟩ := A
+      cases A with
+      | nil => simp at h_size
+      | cons a as =>
+        simp at h_size
+        have := @ih { data := as } 0 (by rw [Nat.zero_add]; exact Nat.succ_le_succ_iff.mp h_size)
+
+        done
+      done
+    done
+  done -/
+
 /-
 def head (A : Array α) (hA : A.size > 0) : α := A.get ⟨0, hA⟩
 def headD (A : Array α) (default : α) : α := if h : A.size > 0 then A.head h else default

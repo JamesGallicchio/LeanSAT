@@ -230,20 +230,6 @@ theorem Array.mkArray_succ' (n : Nat) (a : α) :
     Array.foldlM f init { data := [] } start stop = pure init :=
   Array.foldlM_empty f init start stop
 
-@[simp] theorem Array.foldlM_cons {m : Type v → Type w} [Monad m] (f : β → α → m β)
-    (init : β) (a : α) (as : List α) :
-    Array.foldlM f init { data := a :: as } 0 (size { data := a :: as }) = do
-      { Array.foldlM f (← f init a) { data := as } 0 (size { data := as }) } := by
-  simp only [foldlM_eq_foldlM_data, List.foldlM]
-
-@[simp] theorem Array.foldlM_cons_succ {m : Type v → Type w} [Monad m] (f : β → α → m β)
-    (init : β) (a : α) (as : List α) (start stop : Nat) :
-    start < stop → stop < size { data := a :: as } →
-      Array.foldlM f init { data := a :: as } (start + 1) (stop + 1) =
-        Array.foldlM f init { data := as } start stop := by
-  sorry
-  done
-
 @[simp] theorem Array.foldlM_trivial {m : Type v → Type w} [Monad m] (f : β → α → m β)
     (init : β) (as : Array α) (i : Nat) :
     as.foldlM f init i i = pure init := by
@@ -271,6 +257,95 @@ theorem Array.foldl_gt {A : Array α} {i : Nat} :
   intro hi f init
   simp [Array.foldl, Id.run]
   exact Array.foldlM_gt (m := Id) hi f init
+
+/-theorem Array.foldlM_stop_ge_size {m : Type v → Type w} [Monad m] {A : Array α} {stop : Nat} :
+    stop ≥ A.size → ∀ (i : Nat) (f : β → α → m β) init, A.foldlM f init i stop = A.foldlM f init i := by
+  intro h_stop i f init
+  simp [foldlM, Id.run]
+  rw [foldlM.loop]
+  intro h_stop'
+
+  done
+
+@[simp] theorem Array.foldlM_cons_zero_succ {m : Type v → Type w} [Monad m] (f : β → α → m β)
+    (init : β) (a : α) (as : List α) (start stop : Nat) :
+      Array.foldlM f init { data := a :: as } 0 (stop + 1) = do
+        { Array.foldlM f (← f init a) { data := as } 0 stop } := by
+  by_cases h_stop : stop
+  induction stop generalizing a as with
+  | zero => cases as <;> rfl
+  | succ stop ih =>
+    cases as with
+    | nil => rfl
+    | cons b bs =>
+
+
+      done
+    done
+
+  match stop with
+  | 0 => cases as <;> rfl
+  | stop + 1 =>
+    cases as
+    · rfl
+    ·
+      done
+    done
+  induction stop with
+  | zero => cases as <;> rfl
+  | succ stop ih =>
+
+    done
+  /-induction as generalizing start stop with
+  | nil => cases stop <;> rfl
+  | cons
+    done
+    split <;> rename _ => h_stop
+    · rw [foldlM.loop]
+      simp
+      done-/
+  done
+
+theorem Array.foldlM_eq_foldlM_data_take {m : Type v → Type w} [Monad m] (f : β → α → m β)
+    (init : β) (A : Array α) (start stop : Nat) :
+    A.foldlM f init start stop = ((A.data.drop start).take stop).foldlM f init := by
+  have ⟨A⟩ := A
+  induction A generalizing start stop with
+  | nil => simp
+  | cons a as ih =>
+    cases start with
+    | zero =>
+      cases stop with
+      | zero => simp
+      | succ stop =>
+        simp
+        done
+      done
+    done
+  done
+
+#exit
+
+
+
+
+
+@[simp] theorem Array.foldlM_cons_succ_succ {m : Type v → Type w} [Monad m] (f : β → α → m β)
+    (init : β) (a : α) (as : List α) (start stop : Nat) :
+    start < stop → stop < size { data := a :: as } →
+      Array.foldlM f init { data := a :: as } (start + 1) (stop + 1) =
+        Array.foldlM f init { data := as } start stop := by
+  sorry
+  done
+
+#exit -/
+
+@[simp] theorem Array.foldlM_cons {m : Type v → Type w} [Monad m] (f : β → α → m β)
+    (init : β) (a : α) (as : List α) :
+    Array.foldlM f init { data := a :: as } 0 (size { data := a :: as }) = do
+      { Array.foldlM f (← f init a) { data := as } 0 (size { data := as }) } := by
+  simp only [foldlM_eq_foldlM_data, List.foldlM]
+
 
 theorem Array.exists_split {A : Array α} {i : Nat} (hi : i ≤ A.size) :
     ∃ (B C : Array α), A = B ++ C ∧ B.size = i ∧ C.size = A.size - i := by
