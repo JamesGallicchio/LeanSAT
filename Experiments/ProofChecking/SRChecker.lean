@@ -170,43 +170,6 @@ def assumeRATClauseDirect (F : RangeArray ILit) (index : Fin F.size) (σ : PS) (
         | some true => error τ
         | some false => loop (i + 1) τ
         | none => loop (i + 1) (τ.setLit (-l))
-
-      /-
-      if hlit : lit.index < σ.gens.size then
-        let gen := σ.gens.get ⟨lit.index, hlit⟩
-        if gen ≥ σ.generation then
-          let n := σ.mappings.get ⟨lit.index, by rw [σ.sizes_eq] at hlit; exact hlit⟩
-          match n with
-          | 0 =>
-            if LitVar.polarity lit then error τ
-            else loop (i + 1) τ
-          | 1 =>
-            if LitVar.polarity lit then loop (i + 1) τ
-            else error τ
-          | n =>
-            -- Map the subst index back into a literal
-            let l :=
-              if n % 2 = 0 then
-                LitVar.mkPos ⟨n / 2 + 1, Nat.succ_pos _⟩
-              else
-                LitVar.mkNeg ⟨n / 2 + 1, Nat.succ_pos _⟩
-            -- TODO: Break the litValue api
-            match τ.litValue? l with
-            | some true => error τ
-            | some false => loop (i + 1) τ
-            | none => loop (i + 1) (τ.setLit (-l))
-        else
-          -- lit gets mapped to itself
-          match τ.litValue? lit with
-          | some true => error τ
-          | some false => loop (i + 1) τ
-          | none => loop (i + 1) (τ.setLit (-lit))
-      -- If we are outside the size of σ, lit gets mapped to itself
-      else
-        match τ.litValue? lit with
-        | some true => error τ
-        | some false => loop (i + 1) τ
-        | none => loop (i + 1) (τ.setLit (-lit)) -/
     else
       ok τ
   termination_by
@@ -248,7 +211,6 @@ def unitPropDirect (τ : PPA) (F : RangeArray ILit) (hint : Fin F.size) : PPA.UP
       F.indexFin ⟨hint + 1, h_index⟩
     else
       F.dsize
-  --let gen := τ.generation
   let rec loop (i : Nat) (unit? : Option ILit) : PPA.UPResult :=
     if h : i < e then
       let lit := F.getFin ⟨i, by
@@ -257,25 +219,6 @@ def unitPropDirect (τ : PPA) (F : RangeArray ILit) (hint : Fin F.size) : PPA.UP
         · have := lt_of_lt_of_le h (F.index_le_dataSize (hint + 1))
           exact lt_of_lt_of_le this F.h_size
         · exact lt_of_lt_of_le h F.h_size⟩
-      /- match τ.assignment.get? lit.index with
-      | none =>
-        match unit? with
-        | none => loop (i + 1) (some lit)
-        | some u =>
-          if u = lit then loop (i + 1) unit?
-          else .multipleUnassignedLiterals
-      | some n =>
-        if gen ≤ n.natAbs then
-          if xor (!(LitVar.polarity lit)) (0 < n) then
-            .satisfied
-          else
-            loop (i + 1) unit?
-        else
-          match unit? with
-          | none => loop (i + 1) (some lit)
-          | some u =>
-            if u = lit then loop (i + 1) unit?
-            else .multipleUnassignedLiterals -/
       match τ.litValue? lit with
       | some true => .satisfied
       | some false => loop (i + 1) unit?
@@ -308,19 +251,12 @@ def applyUPHint (F : RangeArray ILit) (bumps : Nat) (τ : PPA) (hint : Nat) : PP
     if !F.isDeletedFin ⟨hint, h_hint⟩ then
       match unitProp τ F ⟨hint, h_hint⟩ with
       | .falsified => ⟨τ, .contra⟩
-      | .satisfied =>
-        -- dbg_trace s!"ERROR: UP found a satisfied clause at index {hint}"
-        ⟨τ, .err⟩
-      | .multipleUnassignedLiterals =>
-        -- dbg_trace s!"ERROR: UP found a non-unit clause at index {hint}"
-        ⟨τ, .err⟩
-      | .unit l =>
-        -- dbg_trace s!"    Hint {hint} makes clause unit on literal {l}"
-        (τ.setLitFor l bumps, .unit)
+      | .satisfied => ⟨τ, .err⟩
+      | .multipleUnassignedLiterals => ⟨τ, .err⟩
+      | .unit l => (τ.setLitFor l bumps, .unit)
     else
       ⟨τ, .err⟩
   else
-    -- dbg_trace s!"ERROR: Hint out of bounds"
     ⟨τ, .err⟩
 
 @[inline]
@@ -375,6 +311,12 @@ def reduce (σ : PS) (F : RangeArray ILit) (index : Fin F.size) : ReductionResul
   termination_by F.rsizeFin index - i
   loop 0 false
 
+/--
+Reduction is the computational bottleneck for SR proof checking.
+The API-breaking version calculates the result of `σ.reduce` directly
+from the arrays, rather than boxing the result into an inductive datatype.
+The time savings are ~30%.
+-/
 def reduceBreak (σ : PS) (F : RangeArray ILit) (index : Fin F.size) : ReductionResult :=
   let s := F.indexFin index
   /- CC: Instead of calculating `rsizeFin` and then subtracting off `s`,
@@ -453,7 +395,6 @@ def findRATHintIndex (ratIndex clauseId : Nat) (ratHintIndexes : Array Nat) : Op
     if ratClauseIndex = clauseId then
       some ⟨ratIndex, h_index⟩
     else
-      -- TODO: Test with `M` here.
       scanRATHintIndexes clauseId ratHintIndexes
   else
     scanRATHintIndexes clauseId ratHintIndexes
@@ -470,21 +411,15 @@ structure SRState where
 
 def checkLine : SRState → SRAdditionLine → Except Bool SRState := fun ⟨F, τ, σ⟩ line =>
   --let ⟨C, wL, wM, upHints, ratHintIndexes, ratHints, _, _⟩ := line
-  -- dbg_trace s!"{C}, {wL}, {wM}"
-  -- dbg_trace s!"{upHints}, {ratHintIndexes}, {ratHints}"
   match uAssumeNegatedForM F τ.reset (line.ratHints.size + 1) with
   | error _ =>
-    -- dbg_trace s!"Assuming the negation of the candidate clause had error"
     error false
   | ok τ =>
-    -- dbg_trace s!"Assumed negation of clause succeeded"
     -- Evaluate the UP hints, with "# of RAT hints" as the offset
     match applyUPHintsDirect F (line.ratHints.size + 1) τ line.upHints with
     | (_, .err) =>
-      -- dbg_trace s!"Applying UP hints encountered an error"
       error false
     | (τ, .contra) =>
-      -- dbg_trace s!"Applying UP hints found contradiction before RAT"
       if F.usize = 0 then error true  -- If the clause is empty, we have a successful contradiction proof
       else ok ⟨F.commit, τ, σ⟩
 
@@ -508,7 +443,6 @@ def checkLine : SRState → SRAdditionLine → Except Bool SRState := fun ⟨F, 
               | .satisfied => loop (i + 1) cachedRatHintIndex bumpCounter τ
               | .notReduced => loop (i + 1) cachedRatHintIndex bumpCounter τ
               | .reduced =>
-                -- dbg_trace s!"Clause index {i} is a RAT candidate"
                 if bumpCounter < line.ratHints.size then
                   -- Find the corresponding RAT hint
                   match findRATHintIndex cachedRatHintIndex i line.ratHintIndexes with
@@ -530,8 +464,6 @@ def checkLine : SRState → SRAdditionLine → Except Bool SRState := fun ⟨F, 
         | ⟨_, false⟩ => error false
         | ⟨τ, true⟩ => ok ⟨F.commit, τ, σ⟩
       else error false
-
-#exit
 
 /-! # Correctness -/
 
@@ -593,19 +525,29 @@ theorem uAssumeNegatedForM_eq_assumeNegatedClauseFor {F : RangeArray ILit}
   simp [uAssumeNegatedForM, assumeNegatedClauseFor,
     @uAssume.loop.aux _ _ _ _ h_models bumps 0 (Size.size L)]
 
-theorem assumeRATClauseDirect.loop.aux {F : RangeArray ILit} (σ : PS)
-  {i j k : Nat} (hi : i < F.size) :
+theorem assumeRATClauseDirect.loop_eq {F : RangeArray ILit} (σ : PS)
+  {i j k : Nat} {hi : i < F.size} :
     k = F.rsizeFin ⟨i, hi⟩ - j →
-    assumeRATClauseDirect.loop F ⟨i, hi⟩ σ (F.indexFin ⟨i, hi⟩ + j) = assumeRATClauseM.loop F ⟨i, hi⟩ σ j := by
+    assumeRATClauseDirect.loop F ⟨i, hi⟩ σ (F.indexFin ⟨i, hi⟩ + j)
+      = assumeRATClauseM.loop F ⟨i, hi⟩ σ j := by
   intro hk
   ext τ
   induction k generalizing τ j with
   | zero =>
     have h_le := Nat.le_of_sub_eq_zero hk.symm
-    unfold assumeRATClauseM.loop
+    unfold assumeRATClauseM.loop assumeRATClauseDirect.loop
     simp [not_lt.mpr h_le]
-    unfold assumeRATClauseDirect.loop
-    simp [not_lt.mpr h_le]
+    simp [rsizeFin] at h_le
+    intro hj
+    split at hj
+    · rename i + 1 < _ => hi_succ
+      simp [hi_succ] at h_le
+      rw [Nat.add_comm j _] at h_le
+      exact absurd h_le (not_le.mpr hj)
+    · rename ¬(i + 1 < _) => hi_succ
+      simp [hi_succ] at h_le
+      rw [Nat.add_comm j _] at h_le
+      exact absurd h_le (not_le.mpr hj)
   | succ k ih =>
     rw [Nat.succ_eq_add_one] at hk
     unfold assumeRATClauseDirect.loop assumeRATClauseM.loop
@@ -614,88 +556,44 @@ theorem assumeRATClauseDirect.loop.aux {F : RangeArray ILit} (σ : PS)
       rw [← hk]
       exact Nat.zero_lt_succ k
     simp [hj, ogetFin_eq_getFin]
+    simp [rsizeFin] at hj
     replace ih := ih (Nat.eq_sub_succ_of_succ_eq_sub hk)
-    split <;> rename _ => h_litValue
-    stop
-    --<;> simp [h_litValue]
-    · rw [add_assoc]
-      exact ih _
-    · rename ILit => lit
-      split <;> rename _ => hτ
-      · rfl
+    split <;> rename _ => hi_succ
+    · simp [hi_succ] at hj
+      have : indexFin F ⟨i, hi⟩ + j < indexFin F ⟨i + 1, hi_succ⟩ := by
+        rw [Nat.add_comm]
+        exact Nat.add_lt_of_lt_sub hj
+      simp [this]
+      split <;> rename _ => h_litValue
+      <;> simp [h_litValue]
       · exact ih _
-      · rw [add_assoc]
-        exact ih _
+      · rename ILit => lit
+        split <;> rename _ => hτ
+        · rfl
+        · exact ih _
+        · rw [add_assoc]
+          exact ih _
+    · simp [hi_succ] at hj
+      have : indexFin F ⟨i, hi⟩ + j < F.dsize := by omega
+      simp [this]
+      split <;> rename _ => h_litValue
+      <;> simp [h_litValue]
+      · exact ih _
+      · rename ILit => lit
+        split <;> rename _ => hτ
+        · rfl
+        · exact ih _
+        · rw [add_assoc]
+          exact ih _
 
-#exit
-
+@[simp]
 theorem assumeRATClauseDirect_eq_assumeRATClauseM : assumeRATClauseDirect = assumeRATClauseM := by
   ext F index σ τ
   have ⟨i, hi⟩ := index
   simp [assumeRATClauseDirect, assumeRATClauseM]
-  have := @assumeRATClauseDirect.loop.aux F σ i 0 (F.rsizeFin ⟨i, hi⟩) hi (by simp)
+  have := @assumeRATClauseDirect.loop_eq F σ i 0 (F.rsizeFin ⟨i, hi⟩) hi (by simp)
   simp at this
   rw [this]
-
-/-
-theorem uAssume.loop.aux {F : RangeArray ILit} {τ : PPA} {Ls : List (Option (List ILit))} {L : List ILit}
-  (h_models : models F Ls L) {bumps : Nat} {i j : Nat} :
-  j = Size.size L - i →
-    uAssumeNegatedForM.loop F bumps i τ = assumeNegatedClauseFor.loop { data := L } bumps i τ
--/
-
-/-theorem assumeRATClauseM.loop.aux {F : RangeArray ILit}
-    {Ls : List (Option (List ILit))} {L : List ILit} (h_models: models F Ls L)
-    {i : Nat} (hi : i < Size.size Ls)
-      {C : List ILit} (hC : Seq.get Ls ⟨i, hi⟩ = some C)
-      {τ : PPA} {j k : Nat} :
-  k = Size.size C - j →
-    assumeRATClauseM.loop F ⟨i, h_models.h_size₁ ▸ hi⟩ τ j = assumeNegatedClauseFor.loop { data := C } 0 j τ := by
-  sorry
-  done-/
-
-/- theorem assumeRATClauseM.loop.cons_aux {F : RangeArray ILit}
-      {Ls : List (Option (List ILit))} {L : List ILit} (h_models : models F Ls L)
-      {i : Nat} (hi : i < Size.size Ls)
-      {lit : ILit} {C : List ILit} (hC : Seq.get L ⟨i, hi⟩ = some (lit :: C))
-      {τ : PPA} {j k : Nat} :
-    k = Size.size L - j → -/
-
-/-
-theorem assumeNegatedClauseFor.loop.cons_aux (τ : PPA) (l : ILit) (bumps : Nat)
-      {ls : List ILit} {i j : Nat} :
-    j = ls.length - i → assumeNegatedClauseFor.loop { data := l :: ls } bumps (i + 1) τ =
-      assumeNegatedClauseFor.loop { data := ls } bumps i τ := by
-  intro hj
-  induction j generalizing τ i with
-  | zero =>
-    have := Nat.le_of_sub_eq_zero hj.symm
-    unfold loop
-    simp [LeanColls.size, not_lt.mpr this, not_lt.mpr (succ_le_succ_iff.mpr this)]
-  | succ j ih =>
-    rw [succ_eq_add_one] at hj
-    unfold loop
-    simp [LeanColls.size, succ_eq_add_one]
-    have hi : i < List.length ls := by
-      apply Nat.lt_of_sub_pos
-      rw [← hj]
-      exact Nat.zero_lt_succ j
-    simp [hi]
-    have : Seq.get ({data := l :: ls} : IClause) ⟨i + 1, succ_lt_succ hi⟩
-      = Seq.get ({data := ls} : IClause) ⟨i, hi⟩ := rfl
-    rw [this]
-    split <;> rename _ => h_get
-    <;> simp [h_get]
-    · apply @ih (setLitFor τ (-Seq.get ({ data := ls } : IClause) { val := i, isLt := hi }) bumps) (i + 1)
-      exact Nat.eq_sub_succ_of_succ_eq_sub hj
-    · apply @ih τ
-      exact Nat.eq_sub_succ_of_succ_eq_sub hj
-
-theorem assumeNegatedClauseFor.loop.cons (τ : PPA) (l : ILit) (ls : List ILit) (bumps i : Nat) :
-    assumeNegatedClauseFor.loop { data := l :: ls } bumps (i + 1) τ
-      = assumeNegatedClauseFor.loop { data := ls } bumps i τ :=
-  @assumeNegatedClauseFor.loop.cons_aux τ l bumps ls i (ls.length - i) rfl
--/
 
 theorem assumeRATClauseM.loop_Lawful {F : RangeArray ILit}
     {Ls : List (Option (List ILit))} {L : List ILit} (h_models : models F Ls L)
@@ -817,20 +715,6 @@ theorem assumeRATClauseM_Lawful {F : RangeArray ILit}
   simp at this
   exact this
 
-/-
-theorem assumeRATClauseM.loop_Lawful {F : RangeArray ILit}
-    {Ls : List (Option (List ILit))} {L : List ILit} (h_models : models F Ls L)
-    {i : Nat} (hi : i < Size.size Ls)
-    {C : List ILit} (hC : Seq.get Ls ⟨i, hi⟩ = some C)
-    (τ τ' : PPA) (σ : PS) {j k : Nat} :
-    k = Size.size C - j →
-      (assumeRATClauseM.loop F ⟨i, h_models.h_size₁ ▸ hi⟩ σ j τ = .error τ'
-        → τ.toPropFun ≤ PropFun.substL (clauseListToPropFun (C.drop j)) σ.toSubst ∧ extended τ τ' 0)
-    ∧ (assumeRATClauseM.loop F ⟨i, h_models.h_size₁ ▸ hi⟩ σ j τ = .ok τ'
-        → τ'.toPropFun = ↑τ ⊓ (PropFun.substL (clauseListToPropFun (C.drop j)) σ.toSubst)ᶜ
-            ∧ extended τ τ' 0) := by
--/
-
 theorem unitProp_loop_eq_unitProp_go {F : RangeArray ILit}
   {Ls : List (Option (List ILit))} {L C : List ILit} (h_models : models F Ls L)
   {τ : PPA} {hint : Nat} {h_hint : hint < Size.size Ls} {i j : Nat} :
@@ -869,7 +753,8 @@ theorem unitProp_eq_unitProp {F : RangeArray ILit}
   {Ls : List (Option (List ILit))} {L C : List ILit} (h_models : models F Ls L)
   {τ : PPA} {hint : Nat} {h_hint : hint < Size.size Ls} :
     Seq.get Ls ⟨hint, h_hint⟩ = some C →
-    RangeArray.unitProp τ F ⟨hint, h_models.h_size₁ ▸ h_hint⟩ = PPA.unitProp τ ({ data := C } : IClause) := by
+    RangeArray.unitProp τ F ⟨hint, h_models.h_size₁ ▸ h_hint⟩
+      = PPA.unitProp τ ({ data := C } : IClause) := by
   intro hC
   simp [RangeArray.unitProp, PPA.unitProp]
   exact @unitProp_loop_eq_unitProp_go _ _ _ _ h_models τ _ h_hint 0 (Size.size C) rfl hC none
@@ -1053,60 +938,199 @@ theorem applyUPHints_contra {F : RangeArray ILit} {Ls : List (Option (List ILit)
         have := inf_le_inf_right τ.toPropFun this
         exact le_trans this h_inf
       · exact extended_refl _ _
-    · injection h_uphints; contradiction
+    · injection h_uphints
+      contradiction
 
-theorem reduce_eq_reduce {F : RangeArray ILit} {Ls : List (Option (List ILit))} {L : List ILit}
-    (h_models : models F Ls L) {C : List ILit}
+theorem unitPropDirect.loop_eq {F : RangeArray ILit} {τ : PPA}
+    {hint : Fin F.size} {i j : Nat} :
+    j = F.rsizeFin hint - i →
+      unitPropDirect.loop τ F hint (F.indexFin hint + i)
+        = RangeArray.unitProp.loop τ F hint i := by
+  intro hj
+  ext unit?
+  induction j generalizing τ i unit? with
+  | zero =>
+    have h_le := Nat.le_of_sub_eq_zero hj.symm
+    unfold unitPropDirect.loop RangeArray.unitProp.loop
+    dsimp
+    simp [not_lt.mpr h_le]
+    simp [rsizeFin] at h_le
+    split at h_le <;> rename_i hi
+    <;> simp [hi]
+    <;> simp at h_le
+    <;> rw [Nat.add_comm i] at h_le
+    <;> simp [not_lt.mpr h_le]
+  | succ j ih =>
+    rw [Nat.succ_eq_add_one] at hj
+    unfold unitPropDirect.loop RangeArray.unitProp.loop
+    dsimp
+    have hi : i < F.rsizeFin hint := by
+      apply Nat.lt_of_sub_pos
+      rw [← hj]
+      exact Nat.zero_lt_succ j
+    have : (indexFin F hint + i <
+        (if h_index : hint.val + 1 < RangeArray.size F then
+          indexFin F ⟨hint.val + 1, h_index⟩
+         else dsize F)) := by
+      simp [rsizeFin] at hi
+      rw [Nat.add_comm]
+      split <;> rename _ => h_hint
+      <;> simp [h_hint] at hi
+      <;> exact Nat.add_lt_of_lt_sub hi
+    simp [hi, this, ogetFin]
+    split <;> rename_i h_litValue
+    <;> simp [h_litValue]
+    · exact ih (Nat.eq_sub_succ_of_succ_eq_sub hj) _
+    · rw [Nat.add_assoc]
+      simp [ih (Nat.eq_sub_succ_of_succ_eq_sub hj)]
+
+@[simp]
+theorem unitPropDirect_eq_unitProp : RangeArray.unitPropDirect = RangeArray.unitProp := by
+  ext τ F ⟨i, hi⟩
+  unfold unitPropDirect RangeArray.unitProp
+  simp only
+  have := @unitPropDirect.loop_eq F τ ⟨i, hi⟩ 0 (F.rsizeFin ⟨i, hi⟩) rfl
+  simp at this
+  rw [this]
+
+@[simp]
+theorem applyUPHintDirect_eq_applyUPHint :
+    RangeArray.applyUPHintDirect = RangeArray.applyUPHint := by
+  ext <;> simp [RangeArray.applyUPHintDirect, RangeArray.applyUPHint]
+
+theorem applyUPHintsDirect.loop_eq {hints : Array Nat} {i j : Nat} :
+    j = Size.size hints - i →
+      ∀ F offset τ, RangeArray.applyUPHintsDirect.loop F offset hints i τ
+        = RangeArray.applyUPHints.loop F offset hints i τ := by
+  intro hj F offset τ
+  induction j generalizing i τ with
+  | zero =>
+    have := Nat.le_of_sub_eq_zero hj.symm
+    unfold applyUPHintsDirect.loop applyUPHints.loop
+    simp [not_lt.mpr this]
+  | succ j ih =>
+    unfold applyUPHintsDirect.loop applyUPHints.loop
+    simp [ih (Nat.eq_sub_succ_of_succ_eq_sub hj)]
+
+@[simp]
+theorem applyUPHintsDirect_eq_applyUPHints : applyUPHintsDirect = applyUPHints := by
+  -- Using `ext` right away creates two goals, so we ensure one goal via suffices
+  suffices h_ext : ∀ F offset τ hints,
+    applyUPHintsDirect F offset τ hints = applyUPHints F offset τ hints by
+    ext F offset τ hints
+    <;> rw [h_ext F offset τ hints]
+  intro F offset τ hints
+  simp [applyUPHintsDirect, applyUPHints]
+  exact @applyUPHintsDirect.loop_eq hints 0 (Size.size hints) rfl F offset τ
+
+theorem reduce.loop_eq {F : RangeArray ILit}
+    {Ls : List (Option (List ILit))} {L C : List ILit} (h_models : models F Ls L)
+    {i j k : Nat} {hi : i < Size.size Ls} :
+    k = Size.size C - j →
+    Seq.get Ls ⟨i, hi⟩ = some C →
+      ∀ (σ : PS),
+      RangeArray.reduce.loop σ F ⟨i, h_models.h_size₁ ▸ hi⟩ j
+        = PS.reduce.loop σ { data := C } j := by
+  intro hk hC σ
+  ext reduced?
+  simp [LeanColls.size] at hk
+  induction k generalizing j reduced? with
+  | zero =>
+    unfold RangeArray.reduce.loop PS.reduce.loop
+    simp [LeanColls.size, rsizeFin_eq_rsize, h_models.h_sizes hi hC]
+    have h_le := Nat.le_of_sub_eq_zero hk.symm
+    simp [LeanColls.size] at h_le
+    simp [LeanColls.size, not_lt.mpr h_le]
+  | succ k ih =>
+    replace ih := @ih _ (Nat.eq_sub_succ_of_succ_eq_sub hk)
+    unfold RangeArray.reduce.loop PS.reduce.loop
+    simp [LeanColls.size, rsizeFin_eq_rsize, h_models.h_sizes hi hC,
+      seval'_eq_seval, ogetFin_eq_oget]
+    split <;> try rfl
+    rename _ => hj
+    have h_get : Seq.get ({ data := C } : IClause) ⟨j, hj⟩ = Seq.get C ⟨j, hj⟩ := rfl
+    simp [h_get, h_models.h_agree hi hC hj]
+    split <;> rename _ => h_litValue
+    <;> simp [h_litValue]
+    · exact ih true
+    · exact ih reduced?
+
+theorem reduce_eq_reduce {F : RangeArray ILit} {Ls : List (Option (List ILit))} {L C : List ILit}
+    (h_models : models F Ls L)
     {i : Nat} (hi : i < Size.size Ls) :
     Seq.get Ls ⟨i, hi⟩ = some C →
-      ∀ (σ : PS), RangeArray.reduce σ F ⟨i, h_models.h_size₁ ▸ hi⟩ = PS.reduce σ ({ data := C} : IClause) := by
-  sorry
-  done
+      ∀ (σ : PS), RangeArray.reduce σ F ⟨i, h_models.h_size₁ ▸ hi⟩
+        = PS.reduce σ ({ data := C} : IClause) := by
+  intro hC σ
+  simp [RangeArray.reduce, PS.reduce]
+  rw [@reduce.loop_eq _ _ _ _ h_models _ 0 (Size.size C) hi rfl hC σ]
 
 theorem reduceBreak.loop_eq_reduce.loop_aux {F : RangeArray ILit} {i : Nat} {hi : i < F.size}
     (σ : PS) {j k : Nat} :
     k = F.rsizeFin ⟨i, hi⟩ - j →
-      reduceBreak.loop σ F ⟨i, hi⟩ (F.indexFin ⟨i, hi⟩ + j) = RangeArray.reduce.loop σ F ⟨i, hi⟩ j := by
+      RangeArray.reduceBreak.loop σ F ⟨i, hi⟩ (F.indexFin ⟨i, hi⟩ + j) = RangeArray.reduce.loop σ F ⟨i, hi⟩ j := by
   intro hk
   ext reduced?
   induction k generalizing σ j reduced? with
   | zero =>
+    -- We have reached the end of the loop - return `reduced?`
     have h_le := Nat.le_of_sub_eq_zero hk.symm
     unfold reduceBreak.loop RangeArray.reduce.loop
-    simp [Nat.not_lt.mpr h_le]
+    -- CC: Annoyingly, `simp only` gets stuck here, so we dsimp instead
+    dsimp
+    have : ¬(indexFin F ⟨i, hi⟩ + j <
+        (if h_index : i + 1 < RangeArray.size F then
+          indexFin F ⟨i + 1, h_index⟩
+         else dsize F)) := by
+      simp [rsizeFin] at h_le
+      split <;> rename _ => hi
+      <;> simp [hi] at h_le
+      <;> rwa [not_lt, Nat.add_comm _ j]
+    simp [Nat.not_lt.mpr h_le, this]
   | succ k ih =>
     have := ih σ (Nat.eq_sub_succ_of_succ_eq_sub hk)
     unfold reduceBreak.loop RangeArray.reduce.loop
+    dsimp  -- CC: Same thing here with `dsimp`
     have hj : j < F.rsizeFin ⟨i, hi⟩ := by
       apply Nat.lt_of_sub_pos
       rw [← hk]
       exact Nat.zero_lt_succ k
-    simp [hj, seval', litValue, ogetFin, varValue]
+    have h_rsize : indexFin F ⟨i, hi⟩ + j <
+        (if h_index : i + 1 < RangeArray.size F then
+          indexFin F ⟨i + 1, h_index⟩
+         else dsize F) := by
+      simp [rsizeFin] at hj
+      simp [indexFin_eq_index] at hj ⊢
+      split <;> rename _ => hi
+      <;> simp [hi] at hj
+      <;> omega
+    simp [hj, h_rsize, seval', litValue, ogetFin, varValue]
+    simp [getFin_eq_get, indexFin_eq_index, -Bool.forall_bool] at this ⊢
     split
     · rename _ => h_lit
       have h_var := h_lit
       simp [ILit.index, σ.sizes_eq] at h_var
-      split
-      · rename _ => h_gen
-        split
+      by_cases h_gen : σ.generation.val ≤ σ.gens[ILit.index (RangeArray.get F (index F i + j))]
+      <;> simp [h_gen]
+      · split
         <;> rename _ => h_mappings
         <;> simp [ILit.index] at h_mappings
         <;> simp [h_mappings]
-        · split
-          · rfl
-          · exact this true
-        · split
-          · exact this true
-          · rfl
+        · split <;> try rfl
+          exact this true
+        · split <;> try rfl
+          exact this true
         · rename _ = 0 → False => h_ne_0
           rename _ = 1 → False => h_ne_1
-          split
+          by_cases h_toMapped : PSV.toMapped' (RangeArray.get F (index F i + j)) = σ.mappings[ILit.index (RangeArray.get F (index F i + j))]
+          <;> simp [h_toMapped]
           · exact this reduced?
           · exact this true
       · exact this reduced?
     · exact this reduced?
 
-theorem reduceBreak.loop_eq_reduce.loop (F : RangeArray ILit) {i : Nat} (hi : i < F.size) (σ : PS) :
+theorem reduceBreak.loop_eq_reduce.loop (F : RangeArray ILit)
+    {i : Nat} (hi : i < F.size) (σ : PS) :
     reduceBreak.loop σ F ⟨i, hi⟩ (F.indexFin ⟨i, hi⟩) = RangeArray.reduce.loop σ F ⟨i, hi⟩ 0 :=
   @reduceBreak.loop_eq_reduce.loop_aux F i hi σ 0 (F.rsizeFin ⟨i, hi⟩) rfl
 
@@ -1134,7 +1158,6 @@ theorem checkLine.loop_ok_aux {line : SRAdditionLine} {F : RangeArray ILit}
       ∧ ∀ {k : Nat} {hk : k < Size.size Ls} {C : List ILit},
         Seq.get Ls ⟨k, hk⟩ = some C → i ≤ k →
           (cnfListToPropFun Ls) ⊓ τ ≤ PropFun.substL (clauseListToPropFun C) σ.toSubst := by
-  stop
   intro hj h_uniform; simp
   induction j generalizing τ i cri bc with
   | zero =>
@@ -1237,7 +1260,6 @@ theorem checkLine.loop_ok_aux {line : SRAdditionLine} {F : RangeArray ILit}
         · -- .error, meaning that τ satisfied the reduced clause
           rename_i τ₂ h_assumeRAT
           intro h_loop
-          rw [assumeRATClauseDirect_eq_assumeRATClauseM] at h_assumeRAT
           rcases (assumeRATClauseM_Lawful h_models hi₂ hC τ τ₂ σ).1 h_assumeRAT with ⟨h_sat, h_ext⟩
           clear h_assumeRAT
           simp at h_sat
@@ -1262,7 +1284,6 @@ theorem checkLine.loop_ok_aux {line : SRAdditionLine} {F : RangeArray ILit}
           -- We found a contradiction (the only acceptable result to return `true` at top-level)
           rename_i τ₃ h_up
           intro h_loop
-          rw [assumeRATClauseDirect_eq_assumeRATClauseM] at h_assumeRAT
           rcases (assumeRATClauseM_Lawful h_models hi₂ hC τ τ₂ σ).2 h_assumeRAT with ⟨h_sat, h_ext⟩
           clear h_assumeRAT
           simp at h_sat
