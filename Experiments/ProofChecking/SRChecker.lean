@@ -55,6 +55,28 @@ theorem cnfListToPropFun_eq_toPropFun (Cs : List (Option (List ILit))) :
     | some C =>
       simp [← ih, PropFun.all]
 
+@[simp]
+theorem cnfListToPropFun_nil : cnfListToPropFun [] = ⊤ := by
+  simp [cnfListToPropFun]
+
+@[simp]
+theorem cnfListToPropFun_cons_none (Cs : List (Option (List ILit))) :
+  cnfListToPropFun (none :: Cs) = cnfListToPropFun Cs := by
+  simp [cnfListToPropFun, all]
+
+@[simp]
+theorem cnfListToPropFun_cons_some (C : List ILit) (Cs : List (Option (List ILit))) :
+  cnfListToPropFun (some C :: Cs) = clauseListToPropFun C ⊓ cnfListToPropFun Cs := by
+  simp [cnfListToPropFun, all]
+
+@[simp]
+theorem cnfListToPropFun_cons (C : Option (List ILit)) (Cs : List (Option (List ILit))) :
+  cnfListToPropFun (C :: Cs) =
+    (match C with
+    | none => ⊤
+    | some C => clauseListToPropFun C) ⊓ cnfListToPropFun Cs := by
+  cases C <;> simp
+
 theorem clausePropFun_ge_of_mem {C : List ILit} {l : ILit} :
   l ∈ C → l.toPropFun ≤ clauseListToPropFun C := by
   intro h
@@ -89,6 +111,20 @@ theorem cnfPropFun_le_of_mem {Cs : List (Option (List ILit))} {C : List ILit} {i
         have := ih h
         apply le_trans _ this
         simp
+
+theorem cnfPropFun_le_set_none {Cs : List (Option (List ILit))}
+  {i : Nat} (hi : i < Size.size Cs) :
+    cnfListToPropFun Cs ≤ cnfListToPropFun (Seq.set Cs ⟨i, hi⟩ none) := by
+  induction Cs generalizing i with
+  | nil => contradiction
+  | cons C Cs ih =>
+    cases i with
+    | zero => simp [Seq.set, List.set]
+    | succ i =>
+      simp [Seq.set, List.set]
+      simp at hi
+      apply le_trans _ (ih (Nat.succ_lt_succ_iff.mp hi))
+      cases C <;> simp
 
 theorem list_satisfies_iff {τ : PropAssignment IVar} {Cs : List (Option (List ILit))} :
     τ ⊨ cnfListToPropFun Cs ↔ ∀ {C : List ILit}, (some C) ∈ Cs → τ ⊨ clauseListToPropFun C := by
@@ -464,6 +500,16 @@ def checkLine : SRState → SRAdditionLine → Except Bool SRState := fun ⟨F, 
         | ⟨_, false⟩ => error false
         | ⟨τ, true⟩ => ok ⟨F.commit, τ, σ⟩
       else error false
+
+@[inline, always_inline]
+def consumeDeletionLine (F : RangeArray ILit) (line : SRDeletionLine) : Except Bool (RangeArray ILit) :=
+  line.clauses.foldlM (init := F) (fun F clauseId =>
+    if hc : clauseId < F.size then
+      if F.isDeletedFin ⟨clauseId, hc⟩ then
+        error false
+      else ok <| F.deleteFin ⟨clauseId, hc⟩
+    else error false)
+
 
 /-! # Correctness -/
 
@@ -1449,5 +1495,53 @@ theorem checkLine_correct {F : RangeArray ILit} {τ : PPA} {σ : PS} {line : SRA
         · -- We drop σ back into the PS model
           -- We set the first literal to true in σ, so it satisfies C
           simp [← satisfies_substL, ← PS.litValue_eq_substL']
+
+/- Correctness of deletion -/
+
+theorem consumeDeletionLine_ok {F F' : RangeArray ILit} {line : SRDeletionLine}
+  {Ls : List (Option (List ILit))} {L : List ILit} (h_models : models F Ls L) :
+    consumeDeletionLine F line = ok F' →
+      ∃ Ls', models F' Ls' L ∧
+        cnfListToPropFun Ls ≤ cnfListToPropFun Ls' := by
+  have ⟨clauses⟩ := line
+  have ⟨clauses⟩ := clauses
+  simp [consumeDeletionLine]
+  induction clauses generalizing F Ls with
+  | nil =>
+    simp [pure, Except.pure]
+    rintro rfl
+    use Ls
+  | cons clauseId clauses ih =>
+    simp [deleteFin_eq_delete, isDeletedFin_eq_isDeleted] at ih
+    intro h_fold
+    rw [Array.foldlM_cons] at h_fold
+    split at h_fold <;> try contradiction
+    split at h_fold <;> try contradiction
+    rename_i h_clauseId h_deleted
+    have h_clauseId₂ := h_models.h_size₁ ▸ h_clauseId
+    rw [isDeletedFin_eq_isDeleted] at h_deleted
+    simp [deleteFin_eq_delete] at h_fold
+    have := models_delete h_models h_clauseId₂
+    have := ih this
+    simp [bind, Except.bind, isDeletedFin_eq_isDeleted] at h_fold
+    simp [h_fold] at this
+    rcases this with ⟨Ls₂, h_models₂, h_propFun⟩
+    use Ls₂, h_models₂
+    exact le_trans (cnfPropFun_le_set_none h_clauseId₂) h_propFun
+
+theorem not_consumeDeletionLine_error_true (F : RangeArray ILit) (line : SRDeletionLine) :
+    ¬(consumeDeletionLine F line = error true) := by
+  have ⟨clauseIds⟩ := line
+  have ⟨clauseIds⟩ := clauseIds
+  simp [consumeDeletionLine]
+  induction clauseIds generalizing F with
+  | nil => simp [pure, Except.pure]
+  | cons id ids ih =>
+    rw [Array.foldlM_cons]
+    split
+    · split
+      · simp [bind, Except.bind]
+      · exact ih (deleteFin F ⟨id, _⟩)
+    · simp [bind, Except.bind]
 
 end SR

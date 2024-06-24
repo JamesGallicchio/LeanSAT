@@ -60,13 +60,9 @@ partial def main : List String → IO Unit
         | .inl addLine =>
           SR.checkLine ⟨F, τ, σ⟩ addLine
         | .inr delLine =>
-          delLine.clauses.foldlM (fun ⟨F, τ, σ⟩ clauseId =>
-            if hc : clauseId < F.size then
-              if F.isDeletedFin ⟨clauseId, hc⟩ then
-                .error false
-              else
-                .ok ⟨F.deleteFin ⟨clauseId, hc⟩, τ, σ⟩
-            else .error false) ⟨F, τ, σ⟩)
+          match SR.consumeDeletionLine F delLine with
+          | .ok F => .ok ⟨F, τ, σ⟩
+          | .error b => .error b)
   | [cnfFile, lsrFile, "c"] => do
     let cnfContents ← IO.FS.withFile cnfFile .read (·.readToEnd)
     let (F, nvars) ← IO.ofExcept <| SRParser.parseFormula cnfContents (RangeArray.empty : RangeArray ILit)
@@ -89,13 +85,9 @@ partial def main : List String → IO Unit
             | .ok st => loop index st
             | .error b => .error b
           | .inr delLine =>
-            delLine.clauses.foldlM (fun ⟨F, τ, σ⟩ clauseId =>
-              if hc : clauseId < F.size then
-                if F.isDeletedFin ⟨clauseId, hc⟩ then
-                  .error false
-                else
-                  .ok ⟨F.deleteFin ⟨clauseId, hc⟩, τ, σ⟩
-              else .error false) ⟨F, τ, σ⟩
+            match SR.consumeDeletionLine F delLine with
+            | .ok F => loop index ⟨F, τ, σ⟩
+            | .error b => .error b
       else .error false
     interpretResult <| loop 0 (SR.SRState.mk F (PPA.new (nvars * 2)) (PS.new (nvars * 2)))
 
