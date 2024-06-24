@@ -62,7 +62,7 @@ partial def main : List String → IO Unit
         | .inr delLine =>
           match SR.consumeDeletionLine F delLine with
           | .ok F => .ok ⟨F, τ, σ⟩
-          | .error b => .error b)
+          | .error _ => .error false)
   | [cnfFile, lsrFile, "c"] => do
     let cnfContents ← IO.FS.withFile cnfFile .read (·.readToEnd)
     let (F, nvars) ← IO.ofExcept <| SRParser.parseFormula cnfContents (RangeArray.empty : RangeArray ILit)
@@ -87,7 +87,7 @@ partial def main : List String → IO Unit
           | .inr delLine =>
             match SR.consumeDeletionLine F delLine with
             | .ok F => loop index ⟨F, τ, σ⟩
-            | .error b => .error b
+            | .error _ => .error false
       else .error false
     interpretResult <| loop 0 (SR.SRState.mk F (PPA.new (nvars * 2)) (PS.new (nvars * 2)))
 

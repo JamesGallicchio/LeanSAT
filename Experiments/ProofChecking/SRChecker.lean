@@ -502,13 +502,13 @@ def checkLine : SRState → SRAdditionLine → Except Bool SRState := fun ⟨F, 
       else error false
 
 @[inline, always_inline]
-def consumeDeletionLine (F : RangeArray ILit) (line : SRDeletionLine) : Except Bool (RangeArray ILit) :=
+def consumeDeletionLine (F : RangeArray ILit) (line : SRDeletionLine) : Except Unit (RangeArray ILit) :=
   line.clauses.foldlM (init := F) (fun F clauseId =>
     if hc : clauseId < F.size then
       if F.isDeletedFin ⟨clauseId, hc⟩ then
-        error false
+        error ()
       else ok <| F.deleteFin ⟨clauseId, hc⟩
-    else error false)
+    else error ())
 
 
 /-! # Correctness -/
@@ -1528,20 +1528,5 @@ theorem consumeDeletionLine_ok {F F' : RangeArray ILit} {line : SRDeletionLine}
     rcases this with ⟨Ls₂, h_models₂, h_propFun⟩
     use Ls₂, h_models₂
     exact le_trans (cnfPropFun_le_set_none h_clauseId₂) h_propFun
-
-theorem not_consumeDeletionLine_error_true (F : RangeArray ILit) (line : SRDeletionLine) :
-    ¬(consumeDeletionLine F line = error true) := by
-  have ⟨clauseIds⟩ := line
-  have ⟨clauseIds⟩ := clauseIds
-  simp [consumeDeletionLine]
-  induction clauseIds generalizing F with
-  | nil => simp [pure, Except.pure]
-  | cons id ids ih =>
-    rw [Array.foldlM_cons]
-    split
-    · split
-      · simp [bind, Except.bind]
-      · exact ih (deleteFin F ⟨id, _⟩)
-    · simp [bind, Except.bind]
 
 end SR
